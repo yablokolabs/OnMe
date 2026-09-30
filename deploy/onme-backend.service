@@ -1,0 +1,62 @@
+# OnMe backend — *instance* unit for the Azure test VM.
+#
+# This unit runs the live checkout in place, as the interactive user, so a code
+# edit only needs `sudo systemctl restart onme-backend` to take effect.
+#
+# NOT INSTALLED YET. The commands below are the install; they have not been run,
+# and the unit name, the working directory and the port all have to be decided
+# together with whatever is already on the box — the Psst backend is serving
+# `psst.yablokolabs.com` on 127.0.0.1:8787 today, so OnMe must not simply take
+# that port without someone choosing to stop Psst first.
+#
+# Install:
+#   sudo cp deploy/onme-backend.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now onme-backend
+#   journalctl -u onme-backend -f
+#
+# Verify from outside:
+#   npm run preflight -- --url https://onme.yablokolabs.com
+
+[Unit]
+Description=OnMe backend (try-on, test VM)
+Documentation=file:/home/azureuser/OnMe/server/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=azureuser
+Group=azureuser
+WorkingDirectory=/home/azureuser/OnMe/server
+
+# The provider key and any tuning live in this git-ignored file. The leading '-'
+# keeps the unit startable if the file is absent (the server then reports the
+# model as unavailable rather than failing to boot).
+EnvironmentFile=-/home/azureuser/OnMe/server/.env
+
+# NOTE ON PRECEDENCE — verified on the Psst unit, not assumed here: systemd reads
+# EnvironmentFile= *after* Environment=, so a HOST/PORT set in server/.env wins
+# over any Environment= line. HOST and PORT therefore live in server/.env as the
+# single source of truth; duplicating them below would be a lie. Keep that file at
+# HOST=127.0.0.1 — loopback is correct when the only ingress is the Cloudflare
+# tunnel, and nothing should reach the port directly.
+#
+# (server/src/env.js has the opposite precedence for the app's own .env loading:
+# a variable already present in the process environment wins there. Both paths
+# therefore agree on the loopback bind.)
+Environment=NODE_ENV=production
+
+ExecStart=/home/azureuser/.local/bin/node src/index.js
+
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=onme-backend
+
+[Install]
+WantedBy=multi-user.target

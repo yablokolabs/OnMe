@@ -1,0 +1,17 @@
+{
+  "name": "onme-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OnMe backend: one endpoint — two photos in, one generated try-on out. Holds the server-side secret and nothing else.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test test/*.test.js",
+    "smoke": "node scripts/smoke.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,47 @@
+# Cloudflare *named* tunnel for the test VM — a stable hostname that survives
+# restarts, unlike a quick tunnel (which gets a new random hostname every run).
+#
+# NOT CREATED YET. Everything under "Provenance" below has to be run before this
+# file is installed; on the Psst project it had already been done, and pretending
+# otherwise here would be a lie in a comment. The tunnel id and credentials path
+# are placeholders until `cloudflared tunnel create` prints a real one.
+#
+# Install, after the provenance steps:
+#   cp deploy/cloudflared-config.yml ~/.cloudflared/onme-config.yml
+#   sudo cp deploy/onme-cloudflared.service /etc/systemd/system/cloudflared-onme.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cloudflared-onme
+#
+# Provenance (to do):
+#   cloudflared tunnel login                   # authorizes the zone yablokolabs.com
+#   cloudflared tunnel create onme-backend     # -> a new id, pasted below
+#   cloudflared tunnel route dns onme-backend onme.yablokolabs.com
+#
+# Public origin: https://onme.yablokolabs.com
+#
+# The credentials file holds the tunnel secret. It lives only in ~/.cloudflared
+# (mode 0400) and is never committed.
+#
+# The existing Psst tunnel (`psst-backend`, id 16efbd82-808f-44bc-b036-99574f9e5346)
+# routes psst.yablokolabs.com to the same loopback port. Two ingress rules cannot
+# share one hostname, and one tunnel cannot serve two different backends on one
+# port, so OnMe gets its own tunnel and its own hostname rather than quietly
+# taking Psst's.
+
+tunnel: REPLACE_WITH_THE_ID_FROM_cloudflared_tunnel_create
+credentials-file: /home/azureuser/.cloudflared/REPLACE_WITH_THE_ID.json
+
+# Cloudflare edge needs no client-side tuning for this workload: a try-on is two
+# ordinary POSTs, the request body is already bounded by `server/src/limits.js`,
+# and the response is a small JSON document. No WebSocket upgrade, no long-lived
+# connection.
+#
+# One thing does need attention on a real deployment: the origin's response is
+# quick (the backend polls the model and answers), but the *request* carries up to
+# 40 MB of base64. Cloudflare's default upload limit for a proxied hostname is
+# 100 MB, so nothing needs changing — worth knowing if a photo cap is ever raised.
+ingress:
+  # The origin is loopback-only (see onme-backend.service): this tunnel is the
+  # single ingress, so nothing needs to reach the port directly.
+  - hostname: onme.yablokolabs.com
+    service: http://127.0.0.1:8788
+  - service: http_status:404
