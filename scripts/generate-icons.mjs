@@ -1,194 +1,196 @@
 #!/usr/bin/env node
 /**
- * Generates every image asset the app config points at, from the brand palette.
+ * Derives every image the app config points at from the brand logo.
  *
- * Checked in and reproducible rather than drawn by hand, for the same reason the
- * mark is drawn with views on screen: the icon, the splash and the favicon should
- * never be able to drift away from the colours the app actually uses.
+ * `assets/brand/onme-logo.png` is the source of truth. Nothing here draws a mark
+ * of its own — the launcher icon, the splash, the adaptive layers and the favicon
+ * are all crops and scalings of that one file, so the app's icon can never drift
+ * away from the brand the way a hand-drawn placeholder eventually would.
  *
  *   npm run icons
  *
- * The PNG encoder is written out below — roughly sixty lines of it — because the
- * alternative is a build dependency for four flat-colour images. Node's `zlib`
- * does the only hard part.
+ * This shells out to the system `ffmpeg`, because the logo is a real PNG with a
+ * gradient and rounded corners: decoding it in JavaScript would mean writing a
+ * codec, and this is a step on a developer's machine rather than something the app
+ * ever runs. The two facts about the logo that this script needs — where the tile
+ * sits inside its white margin, and how round its corners are — are *measured*
+ * from the file rather than hard-coded, so replacing the logo still works.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deflateSync } from 'node:zlib';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const IMAGES = path.join(REPO_ROOT, 'assets', 'images');
 const BRAND = path.join(REPO_ROOT, 'assets', 'brand');
+const SOURCE = path.join(BRAND, 'onme-logo.png');
 
-/** Kept in step with `src/constants/theme.ts` by hand — there are two colours. */
-const BACKGROUND = [0x0b, 0x0a, 0x0f];
-const ACCENT = [0xd8, 0xc4, 0xa2];
-const WHITE = [0xff, 0xff, 0xff];
+/** The app's own dark background, kept in step with `src/constants/theme.ts`. */
+const DARK = '0x0B0A0F';
+/** Everything is built on a 1024 canvas, which is what the stores ask for. */
+const CANVAS = 1024;
+/** The mark inside a splash or adaptive icon, leaving the platform's clear space. */
+const MARK = 636;
+/** Corner radius of the tile, as a fraction of its side. Measured, then rounded. */
+const CORNER_RATIO = 0.115;
 
-/* ── PNG encoding ─────────────────────────────────────────────────────────── */
+const work = mkdtempSync(path.join(tmpdir(), 'onme-icons-'));
 
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let n = 0; n < 256; n += 1) {
-    let c = n;
-    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    table[n] = c >>> 0;
+function ffmpeg(args) {
+  try {
+    return execFileSync('ffmpeg', ['-v', 'error', '-y', ...args], { maxBuffer: 1 << 30 });
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new Error('ffmpeg is required to build the icons from the logo: install it and re-run `npm run icons`.');
+    }
+    throw error;
   }
-  return table;
-})();
-
-function crc32(buffer) {
-  let c = 0xffffffff;
-  for (const byte of buffer) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
 }
 
-function chunk(type, data) {
-  const length = Buffer.alloc(4);
-  length.writeUInt32BE(data.length, 0);
-
-  const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(body), 0);
-
-  return Buffer.concat([length, body, crc]);
+/** Raw RGB pixels of the source, for measuring the tile. */
+function sourcePixels() {
+  const probe = execFileSync(
+    'ffprobe',
+    ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', SOURCE],
+    { encoding: 'utf8' }
+  ).trim();
+  const [width, height] = probe.split(',').map(Number);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    throw new Error(`could not read the logo's size (ffprobe said "${probe}")`);
+  }
+  const raw = ffmpeg(['-i', SOURCE, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-']);
+  return { width, height, data: raw };
 }
 
-/** Encodes 8-bit RGBA pixels. One filter (none) per scanline: flat art compresses well. */
-function encodePng(width, height, rgba) {
-  const stride = width * 4;
-  const raw = Buffer.alloc((stride + 1) * height);
+/** True for a pixel with real colour in it — the tile is a magenta-to-indigo gradient. */
+function isTilePixel(data, index) {
+  const r = data[index];
+  const g = data[index + 1];
+  const b = data[index + 2];
+  return Math.max(r, g, b) - Math.min(r, g, b) > 25 || (r < 200 && g < 200);
+}
 
-  for (let y = 0; y < height; y += 1) {
-    raw[y * (stride + 1)] = 0;
-    rgba.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
+/**
+ * The square the logo's tile occupies inside its white margin.
+ *
+ * Scans inward on a coarse grid rather than pixel by pixel: the answer is a crop
+ * box, and a few pixels of slop there is invisible once the tile is scaled up.
+ */
+function measureTile({ width, height, data }) {
+  const rowIsTile = (y) => {
+    let hits = 0;
+    for (let x = 0; x < width; x += 8) if (isTilePixel(data, (y * width + x) * 3)) hits += 1;
+    return hits > width / 8 / 3;
+  };
+  const columnIsTile = (x) => {
+    let hits = 0;
+    for (let y = 0; y < height; y += 8) if (isTilePixel(data, (y * width + x) * 3)) hits += 1;
+    return hits > height / 8 / 3;
+  };
+
+  const rows = [];
+  for (let y = 0; y < height; y += 4) if (rowIsTile(y)) rows.push(y);
+  const columns = [];
+  for (let x = 0; x < width; x += 4) if (columnIsTile(x)) columns.push(x);
+  if (rows.length === 0 || columns.length === 0) {
+    throw new Error('the logo does not contain a coloured tile to crop');
   }
 
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // colour type: truecolour with alpha
+  const side = Math.max(columns[columns.length - 1] - columns[0], rows[rows.length - 1] - rows[0]);
+  return { side, x: columns[0], y: rows[0] };
+}
 
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk('IHDR', ihdr),
-    chunk('IDAT', deflateSync(raw, { level: 9 })),
-    chunk('IEND', Buffer.alloc(0)),
+/** A rounded-rectangle alpha mask, so the tile's white canvas corners go transparent. */
+function roundedMask(radius) {
+  const limit = CANVAS - radius;
+  const outside = (dx, dy) => `pow(max(${dx},0),2)+pow(max(${dy},0),2)`;
+  const corner = (x, y) => `if(gt(${outside(x, y)},pow(${radius},2)),0,`;
+  const expression =
+    corner(`(${radius})-X`, `(${radius})-Y`) +
+    corner(`X-(${limit})`, `(${radius})-Y`) +
+    corner(`(${radius})-X`, `Y-(${limit})`) +
+    corner(`X-(${limit})`, `Y-(${limit})`) +
+    '255))))';
+
+  const out = path.join(work, 'mask.png');
+  ffmpeg([
+    '-f', 'lavfi', '-i', `color=c=white:s=${CANVAS}x${CANVAS}`,
+    '-vf', `format=gray,geq=lum='${expression}',format=gray`,
+    '-frames:v', '1', out,
+  ]);
+  return out;
+}
+
+/** Lays `input` over a flat colour, centred, at `size` — or over nothing at all. */
+function compose({ input, size, out, background }) {
+  const overlay = `[1:v]scale=${size}:${size}:flags=lanczos[mark];[0:v][mark]overlay=(W-w)/2:(H-h)/2:format=auto`;
+  if (background === null) {
+    ffmpeg([
+      '-f', 'lavfi', '-i', `color=c=black@0.0:s=${CANVAS}x${CANVAS},format=rgba`,
+      '-i', input,
+      '-filter_complex', `${overlay},format=rgba`,
+      '-frames:v', '1', out,
+    ]);
+    return;
+  }
+  ffmpeg([
+    '-f', 'lavfi', '-i', `color=c=${background}:s=${CANVAS}x${CANVAS}`,
+    '-i', input,
+    '-filter_complex', `${overlay},format=rgb24`,
+    '-frames:v', '1', out,
   ]);
 }
 
-/* ── The mark ─────────────────────────────────────────────────────────────── */
-
-/** Signed distance to a rounded square centred on the origin. Negative is inside. */
-function distanceToRoundedSquare(x, y, half, radius) {
-  const qx = Math.abs(x) - half + radius;
-  const qy = Math.abs(y) - half + radius;
-  const outside = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - radius;
-  const inside = Math.min(Math.max(qx, qy), 0);
-  return outside + inside;
-}
-
-/**
- * Whether a point is inside the mark, in coordinates from -1 to 1.
- *
- * The mark is a frame with a dot in it: you, seen in the mirror.
- */
-function inMark(x, y) {
-  const FRAME_HALF = 0.74;
-  const FRAME_RADIUS = 0.3;
-  const FRAME_STROKE = 0.085;
-  const DOT_RADIUS = 0.3;
-
-  if (Math.hypot(x, y) <= DOT_RADIUS) return true;
-  return Math.abs(distanceToRoundedSquare(x, y, FRAME_HALF, FRAME_RADIUS)) <= FRAME_STROKE / 2;
-}
-
-const SUPERSAMPLE = 4;
-
-/**
- * Draws the mark over a background.
- *
- * @param {number} size Output edge in pixels.
- * @param {{ background?: number[], mark?: number[], scale?: number }} options
- *   `scale` shrinks the mark inside the canvas, for the Android safe zone.
- */
-function drawMark(size, { background = null, mark = ACCENT, scale = 1 } = {}) {
-  const pixels = Buffer.alloc(size * size * 4);
-  const centre = size / 2;
-  const unit = (size / 2) * scale;
-  const samples = SUPERSAMPLE * SUPERSAMPLE;
-
-  for (let py = 0; py < size; py += 1) {
-    for (let px = 0; px < size; px += 1) {
-      let covered = 0;
-
-      for (let sy = 0; sy < SUPERSAMPLE; sy += 1) {
-        for (let sx = 0; sx < SUPERSAMPLE; sx += 1) {
-          const x = (px + (sx + 0.5) / SUPERSAMPLE - centre) / unit;
-          const y = (py + (sy + 0.5) / SUPERSAMPLE - centre) / unit;
-          if (inMark(x, y)) covered += 1;
-        }
-      }
-
-      const alpha = covered / samples;
-      const offset = (py * size + px) * 4;
-
-      // The mark is composited over the background, then the whole pixel is
-      // given that background's alpha: a transparent canvas stays transparent
-      // where nothing was drawn, which is what Android's adaptive layers need.
-      const base = background ?? [0, 0, 0];
-      const baseAlpha = background ? 255 : 0;
-
-      for (let channel = 0; channel < 3; channel += 1) {
-        pixels[offset + channel] = Math.round(
-          base[channel] + (mark[channel] - base[channel]) * alpha
-        );
-      }
-      pixels[offset + 3] = Math.round(baseAlpha + (255 - baseAlpha) * alpha);
-    }
-  }
-
-  return encodePng(size, size, pixels);
-}
-
-/* ── Outputs ──────────────────────────────────────────────────────────────── */
-
-const OUTPUTS = [
-  // The launcher icon, and the same image iOS uses.
-  ['icon.png', 1024, { background: BACKGROUND, mark: ACCENT }],
-  // Adaptive icons: the system crops the outer third, so the mark is drawn small.
-  ['android-icon-foreground.png', 1024, { mark: ACCENT, scale: 0.62 }],
-  ['android-icon-background.png', 1024, { background: BACKGROUND }],
-  ['android-icon-monochrome.png', 1024, { mark: WHITE, scale: 0.62 }],
-  // The splash mark, centred by the plugin over the configured background.
-  ['splash-icon.png', 1024, { mark: ACCENT, scale: 0.86 }],
-  ['favicon.png', 48, { background: BACKGROUND, mark: ACCENT }],
-];
-
 function main() {
   mkdirSync(IMAGES, { recursive: true });
-  mkdirSync(BRAND, { recursive: true });
+  const measured = measureTile(sourcePixels());
+  const radius = Math.round(measured.side * CORNER_RATIO);
 
-  for (const [name, size, options] of OUTPUTS) {
-    const file = path.join(IMAGES, name);
-    writeFileSync(file, drawMark(size, options));
-    console.log(`wrote assets/images/${name} (${size}×${size})`);
-  }
+  // The tile on its own, square and with transparent corners: the shape everything
+  // else is built from, and the one the app itself shows on screen.
+  const square = path.join(work, 'tile-square.png');
+  ffmpeg([
+    '-i', SOURCE,
+    '-vf', `crop=${measured.side}:${measured.side}:${measured.x}:${measured.y},scale=${CANVAS}:${CANVAS}:flags=lanczos`,
+    '-frames:v', '1', square,
+  ]);
 
-  // The same mark as vectors, for anything that is not a phone.
-  writeFileSync(
-    path.join(BRAND, 'onme-mark.svg'),
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1 -1 2 2" width="96" height="96">
-  <rect x="-0.74" y="-0.74" width="1.48" height="1.48" rx="0.3" ry="0.3"
-        fill="none" stroke="#d8c4a2" stroke-width="0.085" />
-  <circle cx="0" cy="0" r="0.3" fill="#d8c4a2" />
-</svg>
-`
-  );
-  console.log('wrote assets/brand/onme-mark.svg');
+  const mask = roundedMask(radius);
+  const tile = path.join(BRAND, 'onme-logo-tile.png');
+  ffmpeg(['-i', square, '-i', mask, '-filter_complex', '[0:v]format=rgba[bg];[bg][1:v]alphamerge,format=rgba', '-frames:v', '1', tile]);
+  ffmpeg(['-i', tile, '-vf', 'scale=384:384:flags=lanczos', '-frames:v', '1', path.join(BRAND, 'onme-logo-tile-384.png')]);
+
+  // The launcher icon is the square tile full bleed: the launcher masks it, and a
+  // pre-rounded icon inside a round mask looks like a bug.
+  ffmpeg(['-i', square, '-frames:v', '1', path.join(IMAGES, 'icon.png')]);
+  compose({ input: tile, size: MARK, out: path.join(IMAGES, 'splash-icon.png'), background: DARK });
+  compose({ input: tile, size: MARK, out: path.join(IMAGES, 'android-icon-foreground.png'), background: null });
+  ffmpeg(['-f', 'lavfi', '-i', `color=c=${DARK}:s=${CANVAS}x${CANVAS}`, '-frames:v', '1', path.join(IMAGES, 'android-icon-background.png')]);
+
+  // The themed icon is the same silhouette in white: Android tints it, so only the
+  // shape may survive.
+  compose({ input: tile, size: MARK, out: path.join(work, 'white.png'), background: null });
+  ffmpeg([
+    '-f', 'lavfi', '-i', `color=c=black@0.0:s=${CANVAS}x${CANVAS},format=rgba`,
+    '-i', path.join(work, 'white.png'),
+    '-filter_complex', "[1:v]format=gray,format=rgba,geq=r=255:g=255:b=255:a='p(X,Y)',format=rgba[mark];[0:v][mark]overlay=(W-w)/2:(H-h)/2:format=auto",
+    '-frames:v', '1', path.join(IMAGES, 'android-icon-monochrome.png'),
+  ]);
+
+  ffmpeg(['-i', tile, '-vf', 'scale=48:48:flags=lanczos', '-frames:v', '1', path.join(IMAGES, 'favicon.png')]);
+
+  // Independently derived from the logo every run: if this drifts, the icon is wrong.
+  console.log(`OnMe icons rebuilt from assets/brand/onme-logo.png`);
+  console.log(`  tile ${measured.side}px at (${measured.x}, ${measured.y}), corner radius ${radius}px`);
+  console.log('  assets/images/{icon,splash-icon,android-icon-foreground,android-icon-background,android-icon-monochrome,favicon}.png');
+  console.log('  assets/brand/onme-logo-tile{,-384}.png');
 }
 
-main();
+try {
+  main();
+} finally {
+  rmSync(work, { recursive: true, force: true });
+}
