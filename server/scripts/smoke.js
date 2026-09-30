@@ -15,12 +15,23 @@
  */
 
 import { spawn } from 'node:child_process';
-import { readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * No test here may pick up the Codex login of whoever runs it.
+ *
+ * A subscription login is a real credential on a developer's machine, and a
+ * smoke test that quietly used it would both spend their quota and hide the
+ * unconfigured path it is supposed to prove. Unless a check sets one of its own,
+ * this points at a file that is not there.
+ */
+const NO_CODEX_LOGIN = path.join(os.tmpdir(), 'onme-smoke-no-codex-login.json');
 
 let failures = 0;
 
@@ -122,12 +133,18 @@ function deadQueueBase() {
 async function checkUnconfigured() {
   console.log('— no try-on model configured\n');
 
-  const server = await startServer({ FAL_KEY: '', FAL_API_KEY: '' });
+  const server = await startServer({
+    FAL_KEY: '',
+    FAL_API_KEY: '',
+    ONME_CODEX_AUTH_PATH: NO_CODEX_LOGIN,
+    ONME_CLIENT_TOKEN: '',
+  });
   try {
     const health = await (await fetch(`${server.base}/health`)).json();
     report(health.status === 'ok', 'health answers', String(health.status));
     report(health.tryOnReady === false, 'health says it cannot make a picture', String(health.tryOnReady));
     report(health.falConfigured === false, 'no model key is configured', String(health.falConfigured));
+    report(health.tryOnProvider === null, 'health names no provider', String(health.tryOnProvider));
 
     const result = await post(server.base, tryOnBody());
     report(result.status === 503, 'a try-on is refused, not attempted', `HTTP ${result.status}`);
@@ -145,7 +162,14 @@ async function checkConfigured() {
   console.log('\n— model key present, provider unreachable\n');
 
   const base = await deadQueueBase();
-  const server = await startServer({ FAL_KEY: 'smoke-key-never-used', FAL_QUEUE_BASE: base });
+  // An empty token means this boot requires none: the probes below are about the
+  // model, and a token from the developer's own `.env` would otherwise answer
+  // every one of them with a 401 before they reached what they are checking.
+  const server = await startServer({
+    FAL_KEY: 'smoke-key-never-used',
+    FAL_QUEUE_BASE: base,
+    ONME_CLIENT_TOKEN: '',
+  });
   try {
     const health = await (await fetch(`${server.base}/health`)).json();
     report(health.tryOnReady === true, 'health says it is ready to generate', String(health.tryOnReady));
@@ -191,10 +215,82 @@ async function checkConfigured() {
   }
 }
 
+/**
+ * The subscription provider with an unreachable endpoint.
+ *
+ * The login here is a fake written to a temp directory, so nothing real is read,
+ * refreshed or spent. What this proves is the wiring: the backend picks the
+ * subscription as its provider, sends both photos, and turns a provider that
+ * cannot be reached into a 502 rather than into a wrong answer.
+ */
+async function checkCodexConfigured() {
+  console.log('\n— subscription login present, provider unreachable\n');
+
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'onme-smoke-codex-'));
+  const authPath = path.join(directory, 'auth.json');
+  const claims = (exp) =>
+    `${Buffer.from('{"alg":"none"}').toString('base64url')}.${Buffer.from(
+      JSON.stringify({ exp })
+    ).toString('base64url')}.not-a-signature`;
+  writeFileSync(
+    authPath,
+    JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        id_token: claims(Math.floor(Date.now() / 1000) + 3600),
+        access_token: claims(Math.floor(Date.now() / 1000) + 3600),
+        refresh_token: 'smoke-never-used',
+        account_id: 'smoke-account',
+      },
+    })
+  );
+
+  const base = await deadQueueBase();
+  const server = await startServer({
+    FAL_KEY: '',
+    FAL_API_KEY: '',
+    ONME_CODEX_AUTH_PATH: authPath,
+    ONME_CODEX_BASE: base,
+    ONME_CODEX_REFRESH: 'off',
+    ONME_CLIENT_TOKEN: '',
+  });
+
+  try {
+    const health = await (await fetch(`${server.base}/health`)).json();
+    report(health.tryOnReady === true, 'health says it is ready to generate', String(health.tryOnReady));
+    report(health.tryOnProvider === 'codex', 'health names the subscription', String(health.tryOnProvider));
+    report(health.codexConfigured === true, 'the login is reported as present');
+    report(health.falConfigured === false, 'and no rented key is claimed');
+
+    const serialized = JSON.stringify(health);
+    report(
+      !/(access_token|refresh_token|bearer|smoke-account|auth\.json)/i.test(serialized),
+      'health carries no token, account id or credential path'
+    );
+
+    const unreachable = await post(server.base, tryOnBody());
+    report(unreachable.status === 502, 'an unreachable subscription is a 502', `HTTP ${unreachable.status}`);
+    report(
+      !/look\//.test(JSON.stringify(unreachable.payload ?? {})),
+      'a failed generation hands out no picture id'
+    );
+
+    const after = await (await fetch(`${server.base}/health`)).json();
+    report(after.looks?.pending === 0, 'and nothing is left waiting to be collected');
+  } finally {
+    server.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 async function checkToken() {
   console.log('\n— shared token required\n');
 
-  const server = await startServer({ FAL_KEY: '', ONME_CLIENT_TOKEN: 'smoke-shared-token' });
+  const server = await startServer({
+    FAL_KEY: '',
+    ONME_CODEX_AUTH_PATH: NO_CODEX_LOGIN,
+    ONME_CLIENT_TOKEN: 'smoke-shared-token',
+  });
   try {
     const health = await (await fetch(`${server.base}/health`)).json();
     report(health.tokenRequired === true, 'health admits a token is required');
@@ -216,13 +312,16 @@ async function checkToken() {
 async function checkRetiredRoutes() {
   console.log('\n— routes this server does not have\n');
 
-  const server = await startServer({ FAL_KEY: '' });
+  const server = await startServer({ FAL_KEY: '', ONME_CODEX_AUTH_PATH: NO_CODEX_LOGIN });
   try {
     for (const [method, route] of [
       ['GET', '/'],
       ['GET', '/looks'],
       ['POST', '/debrief'],
       ['GET', '/sessions/abc/stream'],
+      // An id that was never handed out: the hand-off route is not a store to
+      // browse, it is one picture for one phone.
+      ['GET', `/look/${'0'.repeat(48)}`],
     ]) {
       const response = await fetch(`${server.base}${route}`, { method });
       report(response.status === 404, `${method} ${route} is not served`, `HTTP ${response.status}`);
@@ -239,6 +338,7 @@ async function main() {
 
   await checkUnconfigured();
   await checkConfigured();
+  await checkCodexConfigured();
   await checkToken();
   await checkRetiredRoutes();
 

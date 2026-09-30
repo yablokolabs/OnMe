@@ -18,8 +18,12 @@ content-type: application/json
    413 too large
    415 not JSON, or a photo format the model cannot take
    429 rate limited
-   502 the provider failed
+   502 the provider failed, or the model refused to draw it
    503 no try-on model configured on this boot
+
+GET /look/<id>
+   200 the picture a try-on just made, as image/png
+   404 never handed out, or already expired
 ```
 
 `GET /health` returns booleans, names and numbers only: whether it can generate, which model, the
@@ -32,9 +36,15 @@ parser. The cost is base64's 4/3 inflation and both images in memory for one req
 
 ## The two promises
 
-- **Nothing is written to disk.** The photos live in memory for the length of one request and are
-  then dropped. No temp file, no cache, no bucket, no database. `scripts/smoke.js` snapshots the
-  file tree before and after the run and fails if anything changed.
+- **No photograph is written to disk.** The photos live in memory for the length of one request
+  and are then dropped. No temp file, no cache, no bucket, no database. `scripts/smoke.js`
+  snapshots the file tree before and after the run and fails if anything changed. A generated
+  picture stays in memory too, for the few minutes it waits to be collected. The single write this
+  server makes is not a photograph: a subscription access token that was close to expiry, put back
+  in the credential file it came from, and only when it had to be refreshed.
+- **A picture is never shown that this server did not generate.** With no provider the answer is a
+  503; when the model refuses to draw something the answer is a 502. There is no fallback image, no
+  stand-in and no retry loop that would spend the user's quota to collect the same refusal.
 - **Every refusal is decided before the photos are read.** The order is
   `405 → 401 → 503 (no model) → 415 → 413 (declared length) → 429 →` and only then is a byte of an
   image accepted. A request this server cannot serve is answered without it ever receiving a
@@ -49,22 +59,43 @@ parser. The cost is base64's 4/3 inflation and both images in memory for one req
 | `src/limits.js` | the ceilings: 12 MB per photo, 40 MB per request, 6 try-ons a minute, 2 at once |
 | `src/tryon/photos.js` | pure byte-signature sniffing (PNG/JPEG/WebP/HEIC), base64 validation, the required consent assertion |
 | `src/tryon/fal.js` | the hand-rolled fal queue client: `POST` the model, poll `status_url`, `GET response_url` |
+| `src/tryon/codex.js` | the subscription client: reads the Codex login, refreshes its token when it is close to expiry, posts both photos to the Codex event stream and reads the picture out of it |
+| `src/tryon/looks.js` | the hand-off: a generated picture held in memory for minutes under an unguessable id, then forgotten |
 
 HEIC is recognised and refused with the fix spelled out (`JPEG or PNG`, iOS *Most Compatible*),
 rather than being passed on to fail at the provider. In practice the app never sends one:
 `expo-image-picker` with `base64: true` re-encodes every pick to JPEG on both platforms.
 
+## Two providers, one endpoint
+
+Which model makes the picture is decided at boot, not by the client:
+
+| Provider | When it is used | What comes back |
+|---|---|---|
+| `fal` | a `FAL_KEY` is set | a URL the app downloads directly |
+| `codex` | no key, but a Codex login is on this machine | the picture itself, served back from `GET /look/<id>` |
+
+`ONME_TRYON_PROVIDER=fal|codex` pins one; by default a rented model wins when there is a key for it,
+because it is the dedicated try-on model. With neither, every try-on is a 503 decided before the
+photos are read.
+
+The subscription path has one limit worth knowing, and it is not a bug: the image tool moderates
+what it draws. An outfit carrying a character or a brand it recognises is refused, and so is some
+editing of a face — the backend turns that into the same 502 as any other failed generation rather
+than showing something else.
+
 ## Configuration
 
-`FAL_KEY` is the only secret, and it lives only here. See the table in the repository README for
-every variable; the defaults are in `src/limits.js` and `src/tryon/fal.js`.
+`FAL_KEY`, or the Codex login on this machine, is the only credential, and it lives only here. See
+the table in the repository README for every variable; the defaults are in `src/limits.js`,
+`src/tryon/fal.js`, `src/tryon/codex.js` and `src/tryon/looks.js`.
 
 ## Run it
 
 ```bash
 npm start          # node src/index.js
 npm run dev        # same, with --watch
-npm test           # 46 tests, no network
+npm test           # 82 tests, no network
 npm run smoke      # boots the real server twice, offline, and checks every refusal
 ```
 

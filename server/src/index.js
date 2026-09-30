@@ -15,13 +15,19 @@
  * inflation and both images in memory for one request — bounded by
  * `LIMITS.maxUploadBytes`, and worth it for a server with no dependencies.
  *
- * **Nothing here is written to disk.** The photos live in memory for the length
- * of one request and are then dropped; the generated image is fetched by the app
- * from the model's own storage and saved on the device. There is no database, no
- * cache and no bucket, so there is nothing to leak and nothing to clean up.
+ * **No photograph is ever written to disk.** The photos live in memory for the
+ * length of one request and are then dropped, and the generated image is either
+ * fetched by the app from the model's own storage, or held in memory here for a
+ * few minutes and then expired (`tryon/looks.js`). There is no database, no cache
+ * and no bucket, so there is nothing to leak and nothing to clean up. The one
+ * exception is not a photograph: when the Codex subscription token is close to
+ * expiry, the refreshed token is written back to the credential file it came
+ * from (§`tryon/codex.js`), because a token is not a picture of anybody.
  *
- * This server holds `FAL_KEY`, server-side only. No key material is ever sent to
- * the app, logged, or returned from an endpoint.
+ * This server holds the credentials, server-side only: `FAL_KEY` when there is
+ * one, and otherwise the Codex login on this machine. No key material, no token
+ * and no account id is ever sent to the app, logged, or returned from an
+ * endpoint — `/health` reports booleans and model names, and a test asserts it.
  *
  * An optional shared client token gates the API. That token is a throttle, not
  * authentication: it ships inside the app bundle (see `ONME_CLIENT_TOKEN`
@@ -32,9 +38,11 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 
+import { getCodexConfig, isCodexConfigured, runVirtualTryOn as runVirtualTryOnWithCodex } from './tryon/codex.js';
 import { loadServerEnv } from './env.js';
 import { LIMITS, describeLimits } from './limits.js';
-import { getFalConfig, isFalConfigured, runVirtualTryOn } from './tryon/fal.js';
+import { getFalConfig, isFalConfigured, runVirtualTryOn as runVirtualTryOnWithFal } from './tryon/fal.js';
+import { describeLookStore, getLook, rememberLook } from './tryon/looks.js';
 import { describeBytes, normalizeConsent, normalizePhotos } from './tryon/photos.js';
 
 loadServerEnv();
@@ -45,6 +53,8 @@ const HOST = process.env.HOST ?? '0.0.0.0';
 const CLIENT_TOKEN = process.env.ONME_CLIENT_TOKEN ?? '';
 /** OnMe's whole API: two photos in, one generated try-on out. */
 const TRYON_PATH = '/tryon';
+/** Where the app collects a picture the backend has to hold itself. */
+const LOOK_PATH_PREFIX = '/look/';
 
 /** Try-ons currently generating, for the concurrency cap. */
 let activeTryOns = 0;
@@ -59,6 +69,61 @@ const counters = {
   tryOnsUnavailable: 0,
   tryOnsFailed: 0,
 };
+
+/**
+ * Which model makes the picture on this boot.
+ *
+ * Two providers, one product. `fal` rents a dedicated try-on model and returns a
+ * URL; `codex` drives a ChatGPT subscription logged in on this machine and
+ * returns the picture itself. `ONME_TRYON_PROVIDER` pins one (`fal` or `codex`);
+ * the default picks a rented model when there is a key for it, and falls back to
+ * the subscription so that a machine with only a Codex login can still make a
+ * picture. Null means this backend honestly cannot generate.
+ */
+function getTryOnProvider() {
+  const wanted = String(process.env.ONME_TRYON_PROVIDER ?? 'auto').trim().toLowerCase();
+  if (wanted === 'fal') return isFalConfigured() ? 'fal' : null;
+  if (wanted === 'codex') return isCodexConfigured() ? 'codex' : null;
+  if (isFalConfigured()) return 'fal';
+  if (isCodexConfigured()) return 'codex';
+  return null;
+}
+
+/** What /health and the 200 body say about the model behind this boot. */
+function getTryOnSummary() {
+  const provider = getTryOnProvider();
+
+  if (provider === 'codex') {
+    const config = getCodexConfig();
+    return {
+      provider,
+      model: config.imageModel,
+      // For this provider the pose is kept because the instruction says so, not
+      // because a parameter enforces it.
+      preservePose: true,
+      // The image tool chooses portrait framing from the person photo.
+      aspectRatio: 'auto',
+    };
+  }
+
+  const fal = getFalConfig();
+  return { provider, model: fal.model, preservePose: fal.preservePose, aspectRatio: fal.aspectRatio };
+}
+
+/**
+ * The base URL the app can reach this server on, for a picture it is about to
+ * download. An explicit `ONME_PUBLIC_BASE_URL` wins; otherwise the request's own
+ * host is used, which is what the phone just proved it can reach.
+ */
+function requestOrigin(req) {
+  const configured = String(process.env.ONME_PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
+  if (configured !== '') return configured;
+
+  const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? 'localhost').split(',')[0].trim();
+  const forwarded = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase();
+  const secure = forwarded === 'https' || forwarded === 'wss';
+  return `${secure ? 'https' : 'http'}://${host}`;
+}
 
 function sendJson(res, statusCode, body) {
   const payload = JSON.stringify(body);
@@ -183,7 +248,8 @@ async function handleTryOnRequest(req, res, url) {
   // with, so the upload would be thrown away for nothing. The photos are the most
   // sensitive thing this app handles, and there is no reason to receive them
   // just to say no.
-  if (!isFalConfigured()) {
+  const provider = getTryOnProvider();
+  if (provider === null) {
     counters.tryOnsUnavailable += 1;
     sendJson(res, 503, {
       error: 'This OnMe backend has no try-on model configured, so it cannot make a picture yet.',
@@ -283,10 +349,10 @@ async function handleTryOnRequest(req, res, url) {
     }
 
     const { person, outfit } = validated.photos;
-    const result = await runVirtualTryOn({
-      photos: { person, outfit },
-      signal: controller.signal,
-    });
+    const result =
+      provider === 'fal'
+        ? await runVirtualTryOnWithFal({ photos: { person, outfit }, signal: controller.signal })
+        : await runVirtualTryOnWithCodex({ photos: { person, outfit }, signal: controller.signal });
 
     if (!result.ok) {
       counters.tryOnsFailed += 1;
@@ -300,10 +366,28 @@ async function handleTryOnRequest(req, res, url) {
     }
 
     counters.tryOnsCompleted += 1;
+
+    // A rented model hands back a URL the app downloads directly. A subscription
+    // model hands back the bytes, so this server holds them for a few minutes
+    // under an unguessable id and gives the app a URL of its own.
+    let imageUrl = typeof result.image.url === 'string' ? result.image.url : '';
+    if (imageUrl === '' && Buffer.isBuffer(result.image.bytes)) {
+      imageUrl = `${requestOrigin(req)}${LOOK_PATH_PREFIX}${rememberLook(result.image)}`;
+    }
+    if (imageUrl === '') {
+      counters.tryOnsFailed += 1;
+      console.log('[onme] try-on produced no fetchable image');
+      sendJson(res, 502, {
+        error: 'OnMe could not make that picture. Try again, or with a different photo.',
+      });
+      return;
+    }
+
+    const summary = getTryOnSummary();
     const size = result.image.width > 0 ? `${result.image.width}x${result.image.height}` : 'unknown size';
     // Sizes and timings only: never a filename, never a photo, never a person.
     console.log(
-      `[onme] try-on generated: person=${describeBytes(person.bytes)} outfit=${describeBytes(
+      `[onme] try-on generated by ${provider}: person=${describeBytes(person.bytes)} outfit=${describeBytes(
         outfit.bytes
       )} ${size} in ${Date.now() - startedAt}ms`
     );
@@ -312,12 +396,12 @@ async function handleTryOnRequest(req, res, url) {
       ok: true,
       origin: 'backend',
       look: {
-        imageUrl: result.image.url,
+        imageUrl,
         contentType: result.image.contentType,
         width: result.image.width,
         height: result.image.height,
         model: result.model,
-        preservePose: getFalConfig().preservePose,
+        preservePose: summary.preservePose,
       },
       photos: { personBytes: person.bytes, outfitBytes: outfit.bytes },
     });
@@ -344,19 +428,24 @@ function handleRequest(req, res) {
   }
 
   if (req.method === 'GET' && url.pathname === '/health') {
-    const fal = getFalConfig();
+    const summary = getTryOnSummary();
     sendJson(res, 200, {
       status: 'ok',
       service: 'onme-backend',
       // Booleans, names and numbers only: no key material, ever.
       falConfigured: isFalConfigured(),
+      codexConfigured: isCodexConfigured(),
+      // Which of the two answers this boot, when either can.
+      tryOnProvider: summary.provider,
       // A try-on needs nothing but the model. One boolean, because there is one
       // half: unlike a pipeline with a local step and a rented one, this server
       // either can generate or it honestly cannot.
-      tryOnReady: isFalConfigured(),
-      tryOnModel: fal.model,
-      preservePose: fal.preservePose,
-      aspectRatio: fal.aspectRatio,
+      tryOnReady: summary.provider !== null,
+      tryOnModel: summary.model,
+      preservePose: summary.preservePose,
+      aspectRatio: summary.aspectRatio,
+      // Pictures waiting to be collected by a phone: numbers only.
+      looks: describeLookStore(),
       tokenRequired: CLIENT_TOKEN.length > 0,
       activeTryOns,
       ...counters,
@@ -364,6 +453,23 @@ function handleRequest(req, res) {
       uptimeSeconds: Math.round(process.uptime()),
     });
     return;
+  }
+
+  // The one picture this server ever holds: a try-on that was just generated,
+  // waiting for the phone that asked for it. It is in memory, under an
+  // unguessable id, and it expires — see `tryon/looks.js`. Nothing here reads
+  // history, and there is no route that lists anything.
+  if (req.method === 'GET' && url.pathname.startsWith(LOOK_PATH_PREFIX)) {
+    const entry = getLook(url.pathname.slice(LOOK_PATH_PREFIX.length));
+    if (entry) {
+      res.writeHead(200, {
+        'content-type': entry.contentType,
+        'content-length': entry.bytes.length,
+        'cache-control': 'no-store',
+      });
+      res.end(entry.bytes);
+      return;
+    }
   }
 
   // The app's history, its photos and its generated images all live on the
@@ -374,14 +480,14 @@ function handleRequest(req, res) {
 const server = createServer(handleRequest);
 
 server.listen(PORT, HOST, () => {
-  const fal = getFalConfig();
+  const summary = getTryOnSummary();
   console.log(`[onme] backend listening on http://${HOST}:${PORT} (virtual try-on)`);
   console.log(`[onme] try-on endpoint: POST http://${HOST}:${PORT}${TRYON_PATH}`);
   console.log(
     `[onme] try-on model: ${
-      isFalConfigured()
-        ? `ready (${fal.model}, preservePose=${fal.preservePose}, aspectRatio=${fal.aspectRatio})`
-        : 'unavailable (no FAL_KEY; every try-on answers 503)'
+      summary.provider === null
+        ? 'unavailable (no FAL_KEY and no Codex login; every try-on answers 503)'
+        : `ready via ${summary.provider} (${summary.model}, preservePose=${summary.preservePose}, aspectRatio=${summary.aspectRatio})`
     } maxImage=${describeBytes(LIMITS.maxImageBytes)} maxUpload=${describeBytes(
       LIMITS.maxUploadBytes
     )} perMinute=${LIMITS.maxTryOnsPerMinute} concurrent=${LIMITS.maxConcurrentTryOns}`

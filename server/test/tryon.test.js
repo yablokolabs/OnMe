@@ -13,7 +13,13 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 
-import { httpPost, startBackend, startFakeFal } from './support/harness.js';
+import {
+  httpPost,
+  startBackend,
+  startCodexLogin,
+  startFakeCodex,
+  startFakeFal,
+} from './support/harness.js';
 import { heicBytes, jpegBytes, notImageBytes, pngBytes, photo } from './support/fixtures.js';
 
 const MODEL = 'fal-ai/image-apps-v2/virtual-try-on';
@@ -385,5 +391,170 @@ describe('with a small upload ceiling', () => {
     const health = await backend.health();
     assert.equal(health.status, 'ok');
     assert.equal(health.activeTryOns, 0);
+  });
+});
+
+describe('with a Codex subscription as the try-on provider', () => {
+  let codex;
+  let login;
+  let backend;
+
+  before(async () => {
+    codex = await startFakeCodex();
+    login = startCodexLogin({ expiresInSeconds: 3600 });
+    backend = await startBackend({
+      // No rented model at all: this is the subscription-only case.
+      FAL_KEY: '',
+      FAL_API_KEY: '',
+      ONME_CODEX_AUTH_PATH: login.authPath,
+      ONME_CODEX_BASE: codex.base,
+      ONME_MAX_TRYONS_PER_MINUTE: '200',
+    });
+  });
+
+  after(async () => {
+    await backend?.stop();
+    await codex?.close();
+    login?.cleanup();
+  });
+
+  test('/health names the subscription as what makes the picture', async () => {
+    const health = await backend.health();
+
+    assert.equal(health.tryOnReady, true);
+    assert.equal(health.tryOnProvider, 'codex');
+    assert.equal(health.tryOnModel, 'gpt-image-2-codex');
+    assert.equal(health.codexConfigured, true);
+    assert.equal(health.falConfigured, false);
+
+    // Still nothing key-shaped: no token, no account id, no credential file path.
+    const serialized = JSON.stringify(health);
+    assert.equal(
+      /(apiKey|api_key|secret|bearer|refresh_token|access_token|account-test-123|auth\.json)/i.test(serialized),
+      false
+    );
+  });
+
+  test('two photos come back as a look this backend can serve itself', async () => {
+    const response = await backend.tryOn(requestBody());
+    assert.equal(response.status, 200);
+
+    const payload = await response.json();
+    assert.equal(payload.ok, true);
+    assert.equal(payload.look.model, 'gpt-image-2-codex');
+    assert.equal(payload.look.contentType, 'image/png');
+    // The size is measured from the picture itself, not taken on trust.
+    assert.equal(payload.look.width, 1037);
+    assert.equal(payload.look.height, 1516);
+    assert.equal(payload.look.preservePose, true);
+    assert.match(payload.look.imageUrl, /^http:\/\/127\.0\.0\.1:\d+\/look\/[0-9a-f]{48}$/);
+  });
+
+  test('the picture is collectable from the URL the app was given', async () => {
+    const payload = await (await backend.tryOn(requestBody())).json();
+
+    const image = await fetch(payload.look.imageUrl);
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get('content-type'), 'image/png');
+    assert.equal(image.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(Buffer.from(await image.arrayBuffer()), codex.png);
+
+    // Collecting it twice works: a download that fails halfway is retried, and the
+    // user has already paid a generation for that picture.
+    assert.equal((await fetch(payload.look.imageUrl)).status, 200);
+  });
+
+  test('an id that was never handed out is a 404, and the plural route stays gone', async () => {
+    assert.equal((await fetch(`${backend.base}/look/${'0'.repeat(48)}`)).status, 404);
+    assert.equal((await fetch(`${backend.base}/looks`)).status, 404);
+  });
+
+  test('both photos travel to the subscription, in order, and nothing is stored there', async () => {
+    await backend.tryOn(requestBody());
+    const last = codex.requests.at(-1);
+
+    assert.equal(last.method, 'POST');
+    assert.equal(last.url, '/responses');
+    assert.match(last.authorization, /^Bearer ey/);
+    assert.equal(last.accountId, 'account-test-123');
+    assert.equal(last.originator, 'codex_cli_rs');
+    assert.ok(last.sessionId.length > 0, 'every try-on gets its own session id');
+
+    const body = codex.lastInput();
+    assert.equal(body.store, false, 'nothing is left behind to clean up');
+    assert.equal(body.tools[0].type, 'image_generation');
+
+    const content = body.input[0].content;
+    assert.match(content[0].text, /IMAGE 1 is the person/);
+    const images = content.filter((part) => part.type === 'input_image');
+    assert.equal(images.length, 2);
+    // Person first, garment second: the instruction names them by position.
+    assert.match(images[0].image_url, /^data:image\/png;base64,/);
+    assert.match(images[1].image_url, /^data:image\/jpeg;base64,/);
+    assert.equal(images[0].image_url.split(',')[1], pngBytes(1024).toString('base64'));
+    assert.equal(images[1].image_url.split(',')[1], jpegBytes(512).toString('base64'));
+  });
+
+  test('/health reports the pictures waiting to be collected, in numbers only', async () => {
+    const before = (await backend.health()).looks.pending;
+    await backend.tryOn(requestBody());
+    const after = (await backend.health()).looks;
+
+    assert.equal(after.pending, before + 1);
+    assert.equal(typeof after.bytes, 'number');
+    assert.equal(typeof after.ttlSeconds, 'number');
+  });
+});
+
+describe('when the subscription will not make the picture', () => {
+  /** A backend whose only provider is a fake subscription, with the given behaviour. */
+  async function withCodex(options, run) {
+    const codex = await startFakeCodex(options);
+    const login = startCodexLogin();
+    const backend = await startBackend({
+      FAL_KEY: '',
+      FAL_API_KEY: '',
+      ONME_CODEX_AUTH_PATH: login.authPath,
+      ONME_CODEX_BASE: codex.base,
+    });
+    try {
+      await run({ backend, codex });
+    } finally {
+      await backend.stop();
+      await codex.close();
+      login.cleanup();
+    }
+  }
+
+  test('a refused image is a 502, and no picture id is handed out', async () => {
+    await withCodex({ refuse: true }, async ({ backend }) => {
+      const response = await backend.tryOn(requestBody());
+      assert.equal(response.status, 502);
+
+      const payload = await response.json();
+      assert.match(payload.error, /could not make that picture/);
+      assert.equal(/\/look\//.test(JSON.stringify(payload)), false);
+
+      const health = await backend.health();
+      assert.equal(health.tryOnsFailed, 1);
+      assert.equal(health.looks.pending, 0, 'a refusal leaves nothing to collect');
+      // Why the tool refused stays in the log, never in the answer.
+      assert.equal(/refused|image tool/.test(JSON.stringify(health)), false);
+    });
+  });
+
+  test('a stream that ends without a picture is a 502', async () => {
+    await withCodex({ noImage: true }, async ({ backend }) => {
+      assert.equal((await backend.tryOn(requestBody())).status, 502);
+      assert.equal((await backend.health()).looks.pending, 0);
+    });
+  });
+
+  test('a rejected token is a 502, and the account is not named in the answer', async () => {
+    await withCodex({ status: 401 }, async ({ backend }) => {
+      const response = await backend.tryOn(requestBody());
+      assert.equal(response.status, 502);
+      assert.equal(/401|account-test-123/.test(JSON.stringify(await response.clone().json())), false);
+    });
   });
 });

@@ -198,6 +198,9 @@ async function main() {
 
   report(data.status === 'ok', 'health status', String(data.status));
   report(data.service === 'onme-backend', 'this is the OnMe backend', String(data.service));
+  // Which of the two ways of making a picture answers on this boot: a rented
+  // model (`fal`) or a Codex subscription logged in on the server.
+  note('provider', String(data.tryOnProvider ?? 'none'));
   note('model', String(data.tryOnModel ?? '?'));
   note('keeps your pose', String(data.preservePose ?? '?'));
   note('framing', String(data.aspectRatio ?? '?'));
@@ -232,7 +235,14 @@ async function main() {
   const entitled = data.tokenRequired !== true || args.token !== '';
 
   if (tryOnReady && entitled) {
-    const wrongType = await postTryOn(baseUrl, { contentType: 'multipart/form-data', body: 'probe' });
+    // The token is sent on every probe below: the token check comes *before* the
+    // content-type check, so a tokenless probe would be answered 401 and would
+    // never reach the refusal it is meant to prove.
+    const wrongType = await postTryOn(baseUrl, {
+      contentType: 'multipart/form-data',
+      body: 'probe',
+      token: args.token,
+    });
     report(
       wrongType.ok && wrongType.status === 415,
       'a non-JSON body is refused',
@@ -312,7 +322,9 @@ async function main() {
     console.log('\nThe try-on path is reachable from this URL.');
   } else {
     console.log('\nThe backend is reachable, but it cannot make a picture yet: it has no try-on model configured.');
-    console.log('A phone run will load, then say so on screen. Set FAL_KEY in the backend .env and restart it first.');
+    console.log('A phone run will load, then say so on screen. Give it one of the two providers and restart it:');
+    console.log('  FAL_KEY=<key>                    a rented fal.ai try-on model, or');
+    console.log('  codex login                      a ChatGPT subscription on the server itself');
   }
 
   if (privateHost || !parsed.secure) {

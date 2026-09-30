@@ -13,7 +13,9 @@
  */
 
 import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request as httpRequest } from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -170,8 +172,141 @@ function randomPort() {
   return 15000 + Math.floor(Math.random() * 20000);
 }
 
+/** The one event a try-on needs, as the Codex backend writes it. */
+function sse(event) {
+  return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+}
+
+/** A PNG header with the size in it, so a size read is not a guess. */
+export function testPng(width = 1037, height = 1516, bytes = 512) {
+  const png = Buffer.alloc(Math.max(24, bytes));
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png, 0);
+  png.writeUInt32BE(width, 16);
+  png.writeUInt32BE(height, 20);
+  return png;
+}
+
+/** A JWT-shaped token, so the expiry can be read out of it the way the real one is read. */
+function fakeJwt(expiresInSeconds) {
+  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(
+    JSON.stringify({ exp: Math.floor(Date.now() / 1000) + expiresInSeconds })
+  ).toString('base64url');
+  return `${header}.${payload}.not-a-real-signature`;
+}
+
+/**
+ * A Codex login on disk, for the tests that need one.
+ *
+ * Written to a temp directory, never to a real `~/.codex`: a test must not read,
+ * refresh or overwrite the credentials of whoever happens to run it.
+ */
+export function startCodexLogin({ expiresInSeconds = 3600 } = {}) {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'onme-codex-login-'));
+  const authPath = path.join(directory, 'auth.json');
+
+  writeFileSync(
+    authPath,
+    JSON.stringify({
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: null,
+      tokens: {
+        id_token: fakeJwt(expiresInSeconds),
+        access_token: fakeJwt(expiresInSeconds),
+        refresh_token: 'rt.test-never-used',
+        account_id: 'account-test-123',
+      },
+      last_refresh: new Date().toISOString(),
+    })
+  );
+
+  return { authPath, cleanup: () => rmSync(directory, { recursive: true, force: true }) };
+}
+
+/**
+ * A fake Codex subscription backend.
+ *
+ * Speaks just enough of the event stream — a created response, then one
+ * `image_generation_call` item — that `src/tryon/codex.js` runs unchanged. It
+ * records what it was sent so a test can assert the two photos travelled in
+ * order, with the account id, and with nothing stored on the provider side.
+ *
+ * @param {{ status?: number, refuse?: boolean, noImage?: boolean, png?: Buffer }} [options]
+ */
+export async function startFakeCodex(options = {}) {
+  const requests = [];
+  const png = options.png ?? testPng();
+
+  const server = createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      const body = Buffer.concat(chunks);
+      requests.push({
+        method: req.method ?? '',
+        url: req.url ?? '',
+        authorization: String(req.headers.authorization ?? ''),
+        accountId: String(req.headers['chatgpt-account-id'] ?? ''),
+        originator: String(req.headers.originator ?? ''),
+        sessionId: String(req.headers.session_id ?? ''),
+        body,
+      });
+
+      const status = Number(options.status ?? 200);
+      if (status !== 200) {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'fake codex failure' }));
+        return;
+      }
+
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const events = [sse({ type: 'response.created' })];
+      if (options.refuse) {
+        events.push(
+          sse({ type: 'response.output_item.done', item: { type: 'image_generation_call', id: 'ig_test', status: 'failed' } })
+        );
+      } else if (!options.noImage) {
+        events.push(
+          sse({
+            type: 'response.output_item.done',
+            item: { type: 'image_generation_call', id: 'ig_test', result: png.toString('base64') },
+          })
+        );
+      }
+      res.end(events.join(''));
+    });
+    req.on('error', () => {});
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  return {
+    base,
+    requests,
+    png,
+    /** The parsed body of the last request, or null. */
+    lastInput: () => {
+      const last = requests.at(-1);
+      if (!last) return null;
+      try {
+        return JSON.parse(last.body.toString('utf8'));
+      } catch {
+        return null;
+      }
+    },
+    close: async () => {
+      await new Promise((resolve) => server.close(resolve));
+    },
+  };
+}
+
 /**
  * Spawns the real backend with the model pointed at a local fake.
+ *
+ * The Codex login is pointed at a path that does not exist unless a test says
+ * otherwise, so no test depends on the machine it runs on being logged in to
+ * ChatGPT — and none can read or refresh a real credential file.
  *
  * @param {Record<string, string>} [extraEnv]
  */
@@ -184,6 +319,8 @@ export async function startBackend(extraEnv = {}) {
       HOST: '127.0.0.1',
       FAL_KEY: 'test-key-never-sent-anywhere-real',
       ONME_CLIENT_TOKEN: '',
+      ONME_CODEX_AUTH_PATH: path.join(os.tmpdir(), 'onme-test-no-codex-login.json'),
+      ONME_CODEX_REFRESH: 'off',
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
