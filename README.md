@@ -27,9 +27,9 @@ Be precise about this, because the demo is easy to overstate:
 | SQLite library of every look, with the outfit it used; works with no connection | working |
 | Share a look, delete your photo, delete all looks, delete everything | working |
 | Backend: one endpoint, token gate, size and rate limits, **nothing written to disk** | working |
-| **A deployed backend to talk to** | **not deployed** — `deploy/` has the unit and tunnel config; they are not installed |
-| **A real try-on from this machine today** | **not possible yet** — there is no `FAL_KEY` here, so `/health` reports `tryOnReady: false` and the app says exactly that on screen |
-| **An installable Android build** | **not built** — no EAS project id and no APK artifact yet; see *Getting it onto a phone* |
+| **A deployed backend** | **working** — live at `https://onme.yablokolabs.com`, behind its own named Cloudflare tunnel, with the tunnel and both services installed and enabled at boot |
+| **A real try-on today** | **not possible yet** — there is no `FAL_KEY` on the server, so `/health` reports `tryOnReady: false` and the app repeats that sentence on screen. Adding the key needs no rebuild: it never reaches the app |
+| **An installable Android build** | **not built** — no EAS project id and no APK artifact yet; the app is run from the dev server meanwhile (see *Getting it onto a phone*) |
 | Accounts, sign-in, per-user entitlement | not built — the shared token is a throttle, not authentication |
 | Generating on the device | not built, deliberately: there is no GPU here, so every generation is a rented one |
 
@@ -153,16 +153,34 @@ The app is complete; what a phone run needs is a *reachable, configured* backend
 1. **Give the backend a model.** Put a real `FAL_KEY` in the backend's `.env` and restart it. Until
    then `/health` says `tryOnReady: false` and the app will say so on screen — that is the honest
    state, not a bug.
-2. **Give it an https URL.** Use the named tunnel in `deploy/cloudflared-config.yml` (create the
-   tunnel, fill in its id, route DNS — the file's placeholders are marked). A phone cannot reach
-   `127.0.0.1`, and a release build will refuse a plain `http://` backend on purpose.
-3. **Point the app at it.** Set `EXPO_PUBLIC_ONME_BACKEND_URL` in `.env` and check with
-   `npm run preflight` before installing anything.
-4. **Build it.** For a development run, `expo-dev-client` is not a dependency yet, so the quickest
-   path is `npx expo start` with Expo Go on the S24 (every native module here is in Expo Go). For
-   an installable APK, `npx eas build --profile preview --platform android` — that needs an Expo
-   login and an `extra.eas.projectId` in `app.json`, which is not set yet.
+2. **Give it an https URL.** Done: the named tunnel in `deploy/cloudflared-config.yml` serves
+   `https://onme.yablokolabs.com` from the loopback-only backend. A phone cannot reach `127.0.0.1`,
+   and a release build refuses a plain `http://` backend on purpose.
+3. **Point the app at it.** Done: `.env` carries `EXPO_PUBLIC_ONME_BACKEND_URL` and the matching
+   `EXPO_PUBLIC_ONME_BACKEND_TOKEN`, and `npm run preflight` passes against the live hostname.
+4. **Run it on the phone.** With no APK yet, the app runs from the dev server, which the second
+   hostname exposes to the phone: Metro listens on `127.0.0.1:8091` and the tunnel maps
+   `onme-dev.yablokolabs.com` to it, so no native build and no Expo account are involved.
 
-The backend on this machine is configured for `127.0.0.1:8788` and its own hostname so it never
-collides with the other app deployed here; `deploy/onme-backend.service` is written but **not
-installed**.
+   The dev server runs as a transient systemd unit, so it is not started at boot:
+
+   ```bash
+   sudo systemd-run --unit=onme-dev-server --uid=azureuser --gid=azureuser \
+     -p Environment=HOME=/home/azureuser \
+     -p Environment=EXPO_PACKAGER_PROXY_URL=https://onme-dev.yablokolabs.com \
+     -p WorkingDirectory="$PWD" \
+     "$PWD/node_modules/expo/bin/cli" start --tunnel --port 8091
+   ```
+
+   The `EXPO_PACKAGER_PROXY_URL` is what makes Metro advertise the public hostname instead of
+   `127.0.0.1:8091`. In Expo Go on the phone, *Enter URL manually* → `exp://onme-dev.yablokolabs.com`.
+
+   A dev server is not a way to ship the app, and this hostname should not outlive that use: delete
+   the `onme-dev` ingress rule once a real build exists.
+
+For an installable APK later: `npx eas build --profile preview --platform android`. That needs an
+Expo login and an `extra.eas.projectId` in `app.json`, neither of which exists yet, and it would bake
+in the same `EXPO_PUBLIC_*` values this checkout already has.
+
+The backend on this machine is on `127.0.0.1:8788` with its own tunnel and hostname, so it never
+collides with the other app deployed here (which holds 8787 and `psst.yablokolabs.com`).

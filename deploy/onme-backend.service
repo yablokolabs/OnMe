@@ -3,17 +3,16 @@
 # This unit runs the live checkout in place, as the interactive user, so a code
 # edit only needs `sudo systemctl restart onme-backend` to take effect.
 #
-# NOT INSTALLED YET. The commands below are the install; they have not been run,
-# and the unit name, the working directory and the port all have to be decided
-# together with whatever is already on the box — the Psst backend is serving
-# `psst.yablokolabs.com` on 127.0.0.1:8787 today, so OnMe must not simply take
-# that port without someone choosing to stop Psst first.
-#
-# Install:
+# INSTALLED AND ENABLED on this VM. Provenance — these are the commands that
+# were run, not a plan:
 #   sudo cp deploy/onme-backend.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now onme-backend
 #   journalctl -u onme-backend -f
+#
+# It is on 127.0.0.1:8788, not the 8787 default, because the Psst backend already
+# serves psst.yablokolabs.com from 8787 on this box. Nothing had to be stopped for
+# OnMe to run; HOST and PORT live in server/.env, which this unit loads.
 #
 # Verify from outside:
 #   npm run preflight -- --url https://onme.yablokolabs.com
