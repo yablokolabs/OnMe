@@ -28,8 +28,8 @@ const IMAGES = path.join(REPO_ROOT, 'assets', 'images');
 const BRAND = path.join(REPO_ROOT, 'assets', 'brand');
 const SOURCE = path.join(BRAND, 'onme-logo.png');
 
-/** The app's own dark background, kept in step with `src/constants/theme.ts`. */
-const DARK = '0x0B0A0F';
+/** The app's own deep indigo, kept in step with `src/constants/theme.ts` and `app.json`. */
+const DARK = '0x0B0620';
 /** Everything is built on a 1024 canvas, which is what the stores ask for. */
 const CANVAS = 1024;
 /** The mark inside a splash or adaptive icon, leaving the platform's clear space. */

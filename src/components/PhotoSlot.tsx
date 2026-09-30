@@ -119,7 +119,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: Radii.pill,
-    backgroundColor: 'rgba(11,10,15,0.72)',
+    // The screen background at 72%, so the chip reads over any photo. Kept in
+    // step with `Palette.background` by hand: React Native cannot mix a token.
+    backgroundColor: 'rgba(11,6,32,0.72)',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: Palette.borderStrong,
   },

@@ -1,37 +1,45 @@
 /**
  * OnMe design tokens.
  *
- * OnMe is a dark, quiet surface: near-black, warm ivory text, and a single
- * champagne accent that stands for the garment rather than for "AI". The palette
- * is deliberately not a tech blue or a violet — this app is meant to read like
- * the mirror in a fitting room, not like a generator.
+ * OnMe is a dark, quiet surface: the logo's deep indigo taken down to near-black,
+ * light lilac text, and a single magenta accent that stands for the outfit rather
+ * than for "AI". Every colour here is sampled from `assets/brand/onme-logo.png`,
+ * so the app is the logo's palette rather than a guess at it:
+ *
+ *   accent      the logo's magenta, measured at #D04198 and lifted to #E860B0 so
+ *               it reads as a button on a near-black surface
+ *   background  the logo's deepest indigo (#160F38), taken further down so the
+ *               surface stays quiet and only the garment has colour
+ *
+ * The palette is deliberately not a tech blue and not a neutral grey — this app is
+ * meant to read like the mirror in a fitting room.
  *
  * Both colour schemes resolve to the same palette so the app stays on-brand on
  * every device (`app.json` pins the dark appearance).
  */
 
 export const Palette = {
-  background: '#0B0A0F',
-  backgroundElevated: '#131118',
-  backgroundElement: '#191720',
-  backgroundSelected: '#242130',
-  border: '#282433',
-  borderStrong: '#3A3545',
+  background: '#0B0620',
+  backgroundElevated: '#160D3A',
+  backgroundElement: '#1D1149',
+  backgroundSelected: '#2A1A66',
+  border: '#2E1E60',
+  borderStrong: '#4A3391',
 
-  text: '#F4F1EC',
-  textSecondary: '#A9A2B4',
-  textFaint: '#6E6878',
+  text: '#F6F1FF',
+  textSecondary: '#B3A4DC',
+  textFaint: '#8E7CC4',
 
-  /** Champagne: the accent is the outfit, never the software. */
-  accent: '#D8C4A2',
-  accentStrong: '#C9B08A',
-  accentSoft: '#EADFCB',
-  accentWash: '#1F1B16',
-  onAccent: '#141118',
+  /** Magenta: the accent is the outfit, never the software. */
+  accent: '#E860B0',
+  accentStrong: '#F584C6',
+  accentSoft: '#F7BBDD',
+  accentWash: '#251247',
+  onAccent: '#190C2E',
 
-  success: '#7FBF9A',
-  warning: '#DDB36A',
-  danger: '#E08A8A',
+  success: '#7FE0B4',
+  warning: '#EDBE72',
+  danger: '#F08395',
 } as const;
 
 export const Spacing = {

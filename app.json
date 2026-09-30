@@ -14,7 +14,7 @@
     "android": {
       "package": "com.yablokolabs.onme",
       "adaptiveIcon": {
-        "backgroundColor": "#0B0A0F",
+        "backgroundColor": "#0B0620",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -30,7 +30,7 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#0B0A0F",
+          "backgroundColor": "#0B0620",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200
         }

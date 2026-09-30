@@ -113,7 +113,7 @@ photos instead of failing with a network error.
 | `npm run server:smoke` | boots the real server offline and walks every refusal — spends nothing |
 | `npm run preflight` | asks one question: **will the app's exact URL make a picture right now?** |
 | `npm run lint` | `expo lint` |
-| `npm run icons` | regenerates the icon, splash and favicon PNGs and the brand SVG |
+| `npm run icons` | rebuilds the launcher icon, the splash, the adaptive layers, the favicon and the in-app logo tile from `assets/brand/onme-logo.png` (needs `ffmpeg`) |
 
 ### Configuration
 

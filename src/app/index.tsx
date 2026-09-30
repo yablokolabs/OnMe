@@ -6,25 +6,15 @@
  * prominent control on this screen on purpose: everything else is the library.
  */
 
-import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { BrandMark } from '@/components/BrandMark';
 import { LookRow } from '@/components/LookRow';
 import { PrimaryButton } from '@/components/PrimaryButton';
-import { OnMeLogo } from '@/components/OnMeMark';
 import { Screen } from '@/components/Screen';
 import { Palette, Radii, Spacing } from '@/constants/theme';
 import { useLooks } from '@/hooks/use-looks';
-
-/**
- * The brand mark, from the real logo file rather than drawn in code.
- *
- * The generated `onme-logo-tile-384` is the logo with its white canvas cropped
- * away and its corners made transparent, so it can sit on the app's dark
- * background without a white box around it. `npm run icons` rebuilds it.
- */
-const BRAND_MARK = require('../../assets/brand/onme-logo-tile-384.png');
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -33,7 +23,7 @@ export default function HomeScreen() {
   return (
     <Screen scroll contentStyle={styles.content}>
       <View style={styles.topBar}>
-        <OnMeLogo size="sm" />
+        <BrandMark size="sm" />
         <Pressable
           onPress={() => router.push('/settings')}
           accessibilityRole="button"
@@ -45,7 +35,7 @@ export default function HomeScreen() {
       </View>
 
       <View style={styles.hero}>
-        <Image source={BRAND_MARK} style={styles.heroMark} contentFit="contain" accessibilityLabel="OnMe" />
+        <BrandMark size="lg" />
         <Text style={styles.tagline}>See it on you.</Text>
         <Text style={styles.subtitle}>
           A full-body photo of you, and any outfit you love. OnMe shows you wearing it in seconds —
@@ -142,10 +132,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.two,
     paddingTop: Spacing.four,
-  },
-  heroMark: {
-    width: 148,
-    height: 148,
   },
   tagline: {
     fontSize: 30,
