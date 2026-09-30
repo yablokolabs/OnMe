@@ -1,20 +1,24 @@
-# Cloudflare *named* tunnel for the test VM — a stable hostname that survives
+# Cloudflare *named* tunnel for the OnMe host — a stable hostname that survives
 # restarts, unlike a quick tunnel (which gets a new random hostname every run).
 #
-# NOT CREATED YET. Everything under "Provenance" below has to be run before this
-# file is installed; on the Psst project it had already been done, and pretending
-# otherwise here would be a lie in a comment. The tunnel id and credentials path
-# are placeholders until `cloudflared tunnel create` prints a real one.
-#
-# Install, after the provenance steps:
+# Install:
 #   cp deploy/cloudflared-config.yml ~/.cloudflared/onme-config.yml
 #   sudo cp deploy/onme-cloudflared.service /etc/systemd/system/cloudflared-onme.service
 #   sudo systemctl daemon-reload && sudo systemctl enable --now cloudflared-onme
 #
-# Provenance (to do):
-#   cloudflared tunnel login                   # authorizes the zone yablokolabs.com
-#   cloudflared tunnel create onme-backend     # -> a new id, pasted below
-#   cloudflared tunnel route dns onme-backend onme.yablokolabs.com
+# Provenance (done on this VM, recorded so it is reproducible):
+#   cloudflared tunnel login                            # already authorized for yablokolabs.com
+#   cloudflared tunnel create onme-backend              # -> id 124233c9-40d6-429a-a8ca-8678744f2d72
+#   cloudflared tunnel route dns --overwrite-dns \
+#     124233c9-40d6-429a-a8ca-8678744f2d72 onme.yablokolabs.com
+#
+# The `--overwrite-dns` and the explicit UUID are both load-bearing, and were
+# learned the hard way: `cloudflared tunnel route dns onme-backend <hostname>`
+# creates the CNAME pointing at the tunnel named in the *default*
+# ~/.cloudflared/config.yml — which on this VM is the Psst tunnel — so the first
+# attempt routed onme.yablokolabs.com at the Psst backend, where the ingress
+# fallback answered 404. Verify with `curl -s https://onme.yablokolabs.com/health`
+# after any DNS change: a 404 there is this mistake, not a backend problem.
 #
 # Public origin: https://onme.yablokolabs.com
 #
@@ -22,13 +26,14 @@
 # (mode 0400) and is never committed.
 #
 # The existing Psst tunnel (`psst-backend`, id 16efbd82-808f-44bc-b036-99574f9e5346)
-# routes psst.yablokolabs.com to the same loopback port. Two ingress rules cannot
+# routes psst.yablokolabs.com to its own loopback port. Two ingress rules cannot
 # share one hostname, and one tunnel cannot serve two different backends on one
 # port, so OnMe gets its own tunnel and its own hostname rather than quietly
-# taking Psst's.
+# taking Psst's. The two tunnels are independent: restarting one cannot interrupt
+# the other.
 
-tunnel: REPLACE_WITH_THE_ID_FROM_cloudflared_tunnel_create
-credentials-file: /home/azureuser/.cloudflared/REPLACE_WITH_THE_ID.json
+tunnel: 124233c9-40d6-429a-a8ca-8678744f2d72
+credentials-file: /home/azureuser/.cloudflared/124233c9-40d6-429a-a8ca-8678744f2d72.json
 
 # Cloudflare edge needs no client-side tuning for this workload: a try-on is two
 # ordinary POSTs, the request body is already bounded by `server/src/limits.js`,
@@ -44,4 +49,16 @@ ingress:
   # single ingress, so nothing needs to reach the port directly.
   - hostname: onme.yablokolabs.com
     service: http://127.0.0.1:8788
+  # A *development* hostname, and deliberately a separate one: it points at the
+  # Metro dev server rather than the backend, so a dev server can be started and
+  # stopped without touching the API the installed app talks to.
+  #
+  # This is what a phone uses to load the app in Expo Go — the phone cannot reach
+  # the VM's loopback, and Metro builds its bundle URLs from the Host header, so
+  # the public hostname is the whole configuration. Nothing here is a secret: a
+  # dev server serves the app bundle and the public client token that already
+  # ships inside it. Delete this rule when a build exists and the dev server is
+  # no longer needed — a Metro dev server should not be a permanent public origin.
+  - hostname: onme-dev.yablokolabs.com
+    service: http://127.0.0.1:8091
   - service: http_status:404
