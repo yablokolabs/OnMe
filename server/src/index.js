@@ -53,6 +53,20 @@ const HOST = process.env.HOST ?? '0.0.0.0';
 const CLIENT_TOKEN = process.env.ONME_CLIENT_TOKEN ?? '';
 /** OnMe's whole API: two photos in, one generated try-on out. */
 const TRYON_PATH = '/tryon';
+/**
+ * Where a visitor who typed this hostname into a browser is sent.
+ *
+ * Every other route here serves the app; this one serves the person. A hostname is
+ * easy to read as the address of the product — the demo video used to end on this
+ * one — and `{"error":"not_found"}` is an honest answer to a request for a route
+ * that does not exist and a useless one to somebody looking for a download. So the
+ * bare origin hops to the page that hands the build out instead. Empty disables the
+ * hop, the way an empty `ONME_CLIENT_TOKEN` turns the token off, and the default is
+ * where this deployment's own builds are published — override it with
+ * `ONME_DOWNLOAD_URL` to point a deployment anywhere else. Nothing about the API
+ * changes: `/tryon`, `/health` and `/look/<id>` are answered before this is reached.
+ */
+const DOWNLOAD_URL = (process.env.ONME_DOWNLOAD_URL ?? 'https://onme-dl.yablokolabs.com/').trim();
 /** Where the app collects a picture the backend has to hold itself. */
 const LOOK_PATH_PREFIX = '/look/';
 
@@ -422,6 +436,14 @@ async function handleTryOnRequest(req, res, url) {
 function handleRequest(req, res) {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
+  // The front door, and the only route here meant for a person rather than the
+  // app: whoever opened this hostname in a browser came for the build.
+  if (DOWNLOAD_URL !== '' && (req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/') {
+    res.writeHead(302, { location: DOWNLOAD_URL, 'cache-control': 'no-store' });
+    res.end();
+    return;
+  }
+
   if (url.pathname === TRYON_PATH) {
     void handleTryOnRequest(req, res, url);
     return;
@@ -493,6 +515,9 @@ server.listen(PORT, HOST, () => {
     )} perMinute=${LIMITS.maxTryOnsPerMinute} concurrent=${LIMITS.maxConcurrentTryOns}`
   );
   console.log(`[onme] client token: ${CLIENT_TOKEN.length > 0 ? 'required' : 'not required'}`);
+  console.log(
+    `[onme] a bare visit to /: ${DOWNLOAD_URL === '' ? 'not_found (ONME_DOWNLOAD_URL is empty)' : `302 to ${DOWNLOAD_URL}`}`
+  );
   console.log(`[onme] disk: nothing is written; photos live for one request only`);
 });
 

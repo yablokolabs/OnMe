@@ -202,8 +202,9 @@ describe('with the try-on model configured', () => {
   });
 
   test('the routes this server does not have answer 404, including the old ones', async () => {
+    // Not `/`: the bare origin is the one route that answers a browser, and it has
+    // its own block below.
     for (const [method, path] of [
-      ['GET', '/'],
       ['GET', '/looks'],
       ['POST', '/debrief'],
       ['GET', '/sessions/abc/stream'],
@@ -503,6 +504,57 @@ describe('with a Codex subscription as the try-on provider', () => {
     assert.equal(after.pending, before + 1);
     assert.equal(typeof after.bytes, 'number');
     assert.equal(typeof after.ttlSeconds, 'number');
+  });
+});
+
+describe('a visitor who opens this hostname in a browser', () => {
+  test('the bare root hops to the page that hands out the build', async () => {
+    const backend = await startBackend();
+    try {
+      const response = await fetch(`${backend.base}/`, { redirect: 'manual' });
+      assert.equal(response.status, 302);
+      assert.equal(response.headers.get('location'), 'https://onme-dl.yablokolabs.com/');
+      // A hop nobody should keep: the page it names is the living answer.
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.equal(await response.text(), '');
+    } finally {
+      await backend?.stop();
+    }
+  });
+
+  test('a HEAD request is answered the same way, so `curl -I` shows the hop', async () => {
+    const backend = await startBackend();
+    try {
+      const response = await fetch(`${backend.base}/`, { method: 'HEAD', redirect: 'manual' });
+      assert.equal(response.status, 302);
+      assert.equal(response.headers.get('location'), 'https://onme-dl.yablokolabs.com/');
+    } finally {
+      await backend?.stop();
+    }
+  });
+
+  test('another deployment points the hop somewhere else', async () => {
+    const backend = await startBackend({ ONME_DOWNLOAD_URL: 'https://downloads.example.test/onme/' });
+    try {
+      const response = await fetch(`${backend.base}/`, { redirect: 'manual' });
+      assert.equal(response.status, 302);
+      assert.equal(response.headers.get('location'), 'https://downloads.example.test/onme/');
+    } finally {
+      await backend?.stop();
+    }
+  });
+
+  test('with nowhere to send them the answer is not_found, not an invented page', async () => {
+    const backend = await startBackend({ ONME_DOWNLOAD_URL: '' });
+    try {
+      const response = await fetch(`${backend.base}/`);
+      assert.equal(response.status, 404);
+      assert.deepEqual(await response.json(), { error: 'not_found' });
+      // The hop is the only thing that changed: the API answers as it always did.
+      assert.equal((await fetch(`${backend.base}/health`)).status, 200);
+    } finally {
+      await backend?.stop();
+    }
   });
 });
 

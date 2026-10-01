@@ -24,6 +24,12 @@ content-type: application/json
 GET /look/<id>
    200 the picture a try-on just made, as image/png
    404 never handed out, or already expired
+
+GET /
+   302 the page that hands out the build, when ONME_DOWNLOAD_URL is set — as it is
+       by default, to this deployment's own page: a browser that opens this
+       hostname came for the app, and this hostname is not the app
+   404 as before when ONME_DOWNLOAD_URL is empty
 ```
 
 `GET /health` returns booleans, names and numbers only: whether it can generate, which model, the
@@ -89,6 +95,11 @@ than showing something else.
 `FAL_KEY`, or the Codex login on this machine, is the only credential, and it lives only here. See
 the table in the repository README for every variable; the defaults are in `src/limits.js`,
 `src/tryon/fal.js`, `src/tryon/codex.js` and `src/tryon/looks.js`.
+
+`ONME_DOWNLOAD_URL` is the one default that names this deployment rather than a protocol detail:
+the page the bare root hops to. Point it at another deployment's build page, or set it empty to
+have the root answer `not_found` the way a pure API would — the API routes are untouched either
+way, and a test walks both cases.
 
 ## Run it
 

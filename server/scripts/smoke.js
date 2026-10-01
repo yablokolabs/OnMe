@@ -310,12 +310,25 @@ async function checkToken() {
 }
 
 async function checkRetiredRoutes() {
-  console.log('\n— routes this server does not have\n');
+  console.log('\n— the front door, and the routes this server does not have\n');
 
-  const server = await startServer({ FAL_KEY: '', ONME_CODEX_AUTH_PATH: NO_CODEX_LOGIN });
+  // The hop is pinned to a value this run owns, so neither a developer's .env nor
+  // this deployment's own default can change what the check proves.
+  const server = await startServer({
+    FAL_KEY: '',
+    ONME_CODEX_AUTH_PATH: NO_CODEX_LOGIN,
+    ONME_DOWNLOAD_URL: 'https://onme-dl.example.test/',
+  });
   try {
+    const root = await fetch(`${server.base}/`, { redirect: 'manual' });
+    report(root.status === 302, 'a bare visit to the root is sent to the download page', `HTTP ${root.status}`);
+    report(
+      root.headers.get('location') === 'https://onme-dl.example.test/',
+      'and to the page the deployment names, rather than back to itself',
+      String(root.headers.get('location'))
+    );
+
     for (const [method, route] of [
-      ['GET', '/'],
       ['GET', '/looks'],
       ['POST', '/debrief'],
       ['GET', '/sessions/abc/stream'],
