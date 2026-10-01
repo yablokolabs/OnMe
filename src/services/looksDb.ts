@@ -12,13 +12,21 @@
 
 import { openDatabaseAsync, type SQLiteDatabase } from 'expo-sqlite';
 
+import {
+  NO_ALLOWANCE,
+  afterReward,
+  afterTryOn,
+  type Allowance,
+} from '@/services/allowance';
 import { deleteStoredImage, deleteAllStoredImages } from '@/services/photos';
 import {
   LOOKS_SCHEMA,
   fromLookRow,
+  parseAllowance,
   parseProfile,
   toLookRow,
   toProfilePayload,
+  type CreditsRow,
   type LookRow,
 } from '@/services/lookRows';
 import type { Look, StoredImage } from '@/types/onme';
@@ -80,6 +88,47 @@ export async function deleteAllLookRows(): Promise<void> {
   await database.runAsync('DELETE FROM looks');
 }
 
+/* ── How many pictures are left for nothing ───────────────────────────────── */
+
+/**
+ * The allowance counters, read from the one row that holds them.
+ *
+ * Every read goes to the database rather than to React state, because the number
+ * has to survive a force-quit: a free tier that could be refreshed by closing the
+ * app is not a free tier.
+ */
+export async function readAllowance(): Promise<Allowance> {
+  const database = await getDatabase();
+  const row = await database.getFirstAsync<CreditsRow>('SELECT used, bonus FROM credits WHERE id = 1');
+  return parseAllowance(row);
+}
+
+async function writeAllowance(next: Allowance): Promise<Allowance> {
+  const database = await getDatabase();
+  await database.runAsync(
+    `INSERT INTO credits (id, used, bonus) VALUES (1, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET used = excluded.used, bonus = excluded.bonus`,
+    next.used,
+    next.bonus
+  );
+  return next;
+}
+
+/** One more picture made. Called after the picture exists, never before it. */
+export async function recordTryOn(): Promise<Allowance> {
+  return writeAllowance(afterTryOn(await readAllowance()));
+}
+
+/** One more picture bought by watching a rewarded ad to the end. */
+export async function grantRewardedTryOn(): Promise<Allowance> {
+  return writeAllowance(afterReward(await readAllowance()));
+}
+
+/** Back to a fresh install. Only "delete everything" does this — see below. */
+export async function resetAllowance(): Promise<void> {
+  await writeAllowance(NO_ALLOWANCE);
+}
+
 /* ── The photo of you ─────────────────────────────────────────────────────── */
 
 export async function getSavedPerson(): Promise<StoredImage | null> {
@@ -134,5 +183,17 @@ export async function clearSavedPerson(): Promise<void> {
 export async function deleteEverything(): Promise<void> {
   await deleteAllLookRows();
   await clearSavedPerson();
+  await resetAllowance();
   deleteAllStoredImages();
 }
+
+/*
+ * Resetting the allowance with everything else is a choice, and worth stating.
+ *
+ * It costs the user every picture they have made to win back ten free ones, so it
+ * is not a way to live for free — and the alternative, keeping a counter behind
+ * after the screen promised that everything OnMe holds is gone, is the kind of
+ * small lie the rest of this app exists not to tell. Pro is different: it is not
+ * in this database at all, so a subscriber who deletes everything still restores
+ * their purchase from the store with one tap.
+ */

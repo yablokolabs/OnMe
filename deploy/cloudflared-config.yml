@@ -61,4 +61,12 @@ ingress:
   # no longer needed — a Metro dev server should not be a permanent public origin.
   - hostname: onme-dev.yablokolabs.com
     service: http://127.0.0.1:8091
+  # The build-download hostname: a plain file server (127.0.0.1:8093, unit
+  # `onme-dl`) that hands the built APK to a phone for sideloading. Deliberately
+  # its own hostname and its own origin: nothing on it is secret, and it must
+  # keep working when the dev server is stopped. Reproduce with:
+  #   cloudflared tunnel route dns --overwrite-dns \
+  #     124233c9-40d6-429a-a8ca-8678744f2d72 onme-dl.yablokolabs.com
+  - hostname: onme-dl.yablokolabs.com
+    service: http://127.0.0.1:8093
   - service: http_status:404

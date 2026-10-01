@@ -18,8 +18,11 @@ import { Image } from 'expo-image';
 import { PhotoSlot } from '@/components/PhotoSlot';
 import { PrimaryButton } from '@/components/PrimaryButton';
 import { Screen } from '@/components/Screen';
+import { Section } from '@/components/Section';
 import { Palette, Radii, Spacing } from '@/constants/theme';
 import { useLooks } from '@/hooks/use-looks';
+import { usePlan } from '@/hooks/use-plan';
+import { FREE_TRY_ONS } from '@/services/allowance';
 import {
   pickPhoto,
   readPhotoBase64,
@@ -50,6 +53,11 @@ const PHOTO_NOTICE =
 export default function TryOnScreen() {
   const router = useRouter();
   const { person: savedPerson, remember, add } = useLooks();
+  const { allowed, noteTryOn, watchAd } = usePlan();
+
+  /** The gate's own actions, kept apart from the try-on's so neither can wedge the other. */
+  const [gate, setGate] = useState<'ad' | 'buy' | null>(null);
+  const [gateMessage, setGateMessage] = useState<string | null>(null);
 
   const [personPicked, setPersonPicked] = useState<PickedPhoto | null>(null);
   const [outfitPicked, setOutfitPicked] = useState<PickedPhoto | null>(null);
@@ -57,6 +65,9 @@ export default function TryOnScreen() {
   const [problem, setProblem] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [stage, setStage] = useState<ScreenStage | null>(null);
+
+  /** True once the gate has refused a try-on: the screen explains itself then. */
+  const [blocked, setBlocked] = useState(false);
 
   const personPreview = personPicked?.uri ?? savedPerson?.uri ?? null;
   const outfitPreview = outfitPicked?.uri ?? null;
@@ -96,8 +107,32 @@ export default function TryOnScreen() {
     []
   );
 
+  const onWatchAd = useCallback(() => {
+    void (async () => {
+      setGate('ad');
+      setGateMessage(null);
+      try {
+        const outcome = await watchAd();
+        setGateMessage(outcome.earned ? 'One more picture — go ahead.' : (outcome.message ?? null));
+      } finally {
+        setGate(null);
+      }
+    })();
+  }, [watchAd]);
+
   const seeItOn = useCallback(async () => {
     if (busy || !outfitPicked) return;
+
+    // The count is checked before a single byte is sent: a request the app cannot
+    // pay for is a picture the user waits for and does not get, and it would cost
+    // the backend a real generation either way.
+    if (!allowed) {
+      setProblem(null);
+      setFailure(null);
+      setGateMessage(null);
+      setBlocked(true);
+      return;
+    }
 
     setProblem(null);
     setFailure(null);
@@ -164,6 +199,9 @@ export default function TryOnScreen() {
       };
 
       await add(look);
+      // Written down only now: the picture exists on the phone, so the picture is
+      // what the user paid for, not the attempt. A failed try-on costs nothing.
+      await noteTryOn();
       // `replace`: "back" from the result belongs at home, not at the picker.
       router.replace({ pathname: '/look', params: { id: look.id } });
     } catch (error) {
@@ -175,7 +213,7 @@ export default function TryOnScreen() {
     } finally {
       setStage(null);
     }
-  }, [add, busy, outfitPicked, personPicked, remember, router, savedPerson]);
+  }, [add, allowed, busy, noteTryOn, outfitPicked, personPicked, remember, router, savedPerson]);
 
   return (
     <Screen
@@ -209,6 +247,40 @@ export default function TryOnScreen() {
             <View style={styles.problemCard}>
               <Text style={styles.problemText}>{failure}</Text>
             </View>
+          ) : null}
+
+          {/*
+            * The gate, in the same words the paywall uses.
+            *
+            * It is here rather than in front of the app because the two photos are
+            * already chosen by this point: the picture is one tap away, so this is
+            * the moment an offer is an offer and not a toll booth.
+            */}
+          {blocked || gateMessage ? (
+            <Section
+              title="Out of free pictures"
+              hint={`${FREE_TRY_ONS} try-ons are included. Pro is unlimited, or a short video buys one more picture.`}
+              tone="warning">
+              {allowed ? null : (
+                <>
+                  <PrimaryButton
+                    label="Watch a video for one more picture"
+                    variant="secondary"
+                    onPress={onWatchAd}
+                    loading={gate === 'ad'}
+                    disabled={gate !== null}
+                    testID="gate-ad"
+                  />
+                  <PrimaryButton
+                    label="See OnMe Pro"
+                    onPress={() => router.push('/paywall')}
+                    disabled={gate !== null}
+                    testID="gate-paywall"
+                  />
+                </>
+              )}
+              {gateMessage ? <Text style={styles.gateNote}>{gateMessage}</Text> : null}
+            </Section>
           ) : null}
 
           <View style={styles.slots}>
@@ -386,6 +458,11 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     color: Palette.textFaint,
     textAlign: 'center',
+  },
+  gateNote: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: Palette.accentSoft,
   },
   working: {
     alignItems: 'center',

@@ -12,6 +12,7 @@
  * becomes *no row* rather than a screen that cannot open.
  */
 
+import type { Allowance } from '@/services/allowance';
 import type { Look, StoredImage } from '@/types/onme';
 
 export interface LookRow {
@@ -22,7 +23,15 @@ export interface LookRow {
   payload: string;
 }
 
-/** The look library, and the one photo of you it keeps for next time. */
+/**
+ * The look library, the one photo of you it keeps for next time, and the two
+ * counters that say how many pictures this install has left for nothing.
+ *
+ * The counters live here rather than in a store's own cache because a free tier
+ * that resets when the app is opened again is not a free tier: both numbers are
+ * written down on every picture. `CREATE TABLE IF NOT EXISTS` covers databases
+ * made before the table existed, so this stays migration-free.
+ */
 export const LOOKS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS looks (
   id TEXT PRIMARY KEY NOT NULL,
@@ -36,7 +45,18 @@ CREATE TABLE IF NOT EXISTS profile (
   id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
   payload TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS credits (
+  id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+  used INTEGER NOT NULL DEFAULT 0,
+  bonus INTEGER NOT NULL DEFAULT 0
+);
 `;
+
+export interface CreditsRow {
+  used: number;
+  bonus: number;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -113,6 +133,20 @@ export function fromLookRow(row: LookRow | null | undefined): Look | null {
     result,
     model: asString(parsed.model),
     preservePose: parsed.preservePose === true,
+  };
+}
+
+/**
+ * The allowance counters, as stored.
+ *
+ * A missing row is a new install, and a nonsensical one is treated as zero: the
+ * only thing worse than asking for money too early is handing out a negative
+ * number of pictures.
+ */
+export function parseAllowance(row: CreditsRow | null | undefined): Allowance {
+  return {
+    used: Math.max(0, Math.round(asNumber(row?.used))),
+    bonus: Math.max(0, Math.round(asNumber(row?.bonus))),
   };
 }
 

@@ -16,6 +16,8 @@ import { Screen } from '@/components/Screen';
 import { Section } from '@/components/Section';
 import { Palette, Radii, Spacing } from '@/constants/theme';
 import { useLooks } from '@/hooks/use-looks';
+import { usePlan } from '@/hooks/use-plan';
+import { FREE_TRY_ONS } from '@/services/allowance';
 
 /**
  * What actually happens to the photos, in full.
@@ -33,6 +35,7 @@ const PRIVACY_NOTE =
 export default function SettingsScreen() {
   const router = useRouter();
   const { looks, person, forgetPerson, clearAll, removeEverything } = useLooks();
+  const { pro, remaining } = usePlan();
   const [busy, setBusy] = useState(false);
 
   const confirmForgetPerson = useCallback(() => {
@@ -172,6 +175,30 @@ export default function SettingsScreen() {
         ) : (
           <Text style={styles.body}>Try something on and it will appear here.</Text>
         )}
+      </Section>
+
+      {/*
+        * The plan, stated as a fact and nothing more.
+        *
+        * Settings is where a person checks what they own; the selling happens on the
+        * paywall, so this card says what is true and puts one way in to the screen
+        * that can change it.
+        */}
+      <Section
+        title="OnMe Pro"
+        hint={
+          pro
+            ? 'Unlimited try-ons. The receipt is kept by the app store account this phone is signed in to, not by OnMe.'
+            : `${remaining === 1 ? 'One picture' : `${remaining} pictures`} left of the ${FREE_TRY_ONS} that are free. Pro removes the count.`
+        }
+        tone={pro ? 'accent' : 'plain'}>
+        <PrimaryButton
+          label={pro ? 'About Pro' : 'See OnMe Pro'}
+          variant="secondary"
+          onPress={() => router.push('/paywall')}
+          disabled={busy}
+          testID="open-paywall"
+        />
       </Section>
 
       <Section

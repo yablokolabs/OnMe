@@ -30,8 +30,11 @@ Be precise about this, because the demo is easy to overstate:
 | **A deployed backend** | **working** — live at `https://onme.yablokolabs.com`, behind its own named Cloudflare tunnel, with the tunnel and both services installed and enabled at boot |
 | **A real try-on today** | **working** — there is still no `FAL_KEY`, so the backend uses the Codex subscription on that machine: `/health` reports `tryOnReady: true` with `tryOnProvider: codex`. Verified end to end through the live hostname: a person photo and a garment photo in, a 1037×1516 picture out in 45s, with the outfit reproduced and the face, hair, skin tone and pose unchanged. Adding a `FAL_KEY` later switches to the rented model with no rebuild |
 | An outfit the image tool will not draw (a character or brand it recognises) | **refused, not faked** — the model's own moderation declines it, the backend answers 502, and the app says it could not make that picture. Nothing is shown in its place |
-| **An installable Android or iOS build** | **not built** — no EAS project id and no APK or IPA artifact yet; the app runs from the dev server on either phone meanwhile (see *Getting it onto a phone*) |
-| Accounts, sign-in, per-user entitlement | not built — the shared token is a throttle, not authentication |
+| **An installable Android build** | **built** — a release APK is downloadable at `https://onme-dl.yablokolabs.com/OnMe-1.0.0.apk` (arm64-v8a, debug-signed, `versionCode 1`, `minSdk 24`, `targetSdk 36`). Built locally with Gradle against the same `EXPO_PUBLIC_*` values in `.env`, so it talks to the live backend. See *Getting it onto a phone* |
+| An installable iOS build | not built — needs an Apple signing identity and an Expo project id |
+| **A demo video** | **built** — 54s, 1920×1080, narrated: `https://onme-dl.yablokolabs.com/OnMe-demo.mp4`. Composed in `videos/` with [videowright](https://github.com/scosman/videowright); the reveal in it is a real try-on made by the live backend, and every app screen in it is a capture of the app itself |
+| **OnMe Pro** — ten free try-ons per install, then either a subscription or a rewarded video | **built, and live in the shipped APK** — the counters live in SQLite, the purchase goes through RevenueCat, and the rewarded video through Google Mobile Ads. The APK is built against a RevenueCat **Test Store** key, so a purchase can be completed and restored with no Play listing; with `EXPO_PUBLIC_REVENUECAT_KEY` empty the build has no store at all and the ten free pictures are the whole app. See *What it charges for* |
+| Accounts, sign-in, per-user entitlement | not built — the shared token is a throttle, not authentication. Pro needs no account: RevenueCat ties the receipt to the store account this phone is signed in to |
 | Generating on the device | not built, deliberately: there is no GPU here, so every generation happens off the device — rented from fal.ai, or made by the subscription login on the server |
 
 **The app never fakes the missing half.** With no model configured, the backend answers
@@ -66,6 +69,57 @@ cannot afford to do.
 - The generated picture is downloaded to the phone, which is why looks keep working offline.
 - Everything OnMe keeps is on the phone, and Settings can delete each part of it separately:
   the photo of you, every look, or all of it.
+
+## What it charges for
+
+Ten try-ons per install are free. After that there are two ways to get one more picture, and both
+are already wired into the app:
+
+- **OnMe Pro** — a monthly subscription that removes the count. The screen is RevenueCat's **own
+paywall** (`react-native-purchases-ui`, `RevenueCatUI.presentPaywallIfNeeded`), presented from the
+dashboard so that what it says about price, trial and what Pro includes can change — per audience,
+A/B tested — without a store release; the entitlement it grants is `yabloko_labs_pro`. A hosted
+paywall has to exist before one can be shown, and that is a dashboard fact the app cannot see, so
+"nothing was presented" falls back to buying the offering's package directly and a build pointed at
+a bare project still sells. The price on the button comes from the offering, so no screen in this
+app can invent one.
+- **A rewarded video** — one more picture, offered at the moment the free ones run out and nowhere
+else: it never plays on its own and never covers the picture someone just made. It is Google's own
+test ad unit until a real AdMob unit id replaces it, so the ads are really served and earn nothing.
+
+Both are counted in the same place the pictures are. `credits` in `onme.db` holds two integers —
+`used` and `bonus` — the arithmetic between them and the free ten lives in
+`src/services/allowance.ts`, and a picture is written down **after** the file is on the phone: a
+refused or failed try-on costs nothing. *Delete everything* resets those counters along with
+everything else, because the screen promises it removes what OnMe holds. A subscription survives
+that, because it is not in the database at all — it is restored from the store in one tap.
+
+Ad revenue is reported to RevenueCat as well. This is the manual integration from its
+ad-monetisation docs: every event Google reports (loaded, impression, click, paid, failed) goes to
+`Purchases.adTracker` under one impression id per ad, so ad money and purchase money are counted in
+the same charts. That is what *RevenueCat Ads* is — not a different way to serve an ad, a careful way
+to count one — and a debug build shows the events under *Ads → Sandbox data*.
+
+The published build carries a RevenueCat **Test Store** key (`test_…`) in
+`EXPO_PUBLIC_REVENUECAT_KEY`, which is why the paywall can be walked end to end right now: that
+project's default offering serves `monthly`, `yearly` and `lifetime` packages, the paywall takes the
+monthly one, and a completed or restored purchase is what flips the entitlement to
+`yabloko_labs_pro`. A Test
+Store purchase takes a fake card and earns nothing. It also costs the build its non-debuggable
+status — the SDK refuses a Test Store key in a build that is not debuggable, so
+`plugins/with-test-store-android.js` marks the release build debuggable while such a key is
+configured, and the APK grows accordingly. The entitlement has to be attached to the product in the
+dashboard and spelled the way the project spells it — `yabloko_labs_pro` here — and `PRO_ENTITLEMENT`
+in `src/services/purchases.ts` is the one place that name lives. If they disagree, the paywall says
+so plainly ("the store finished that, but Pro is not active yet") instead of failing silently.
+
+What is still missing to make any of it real money: a store listing to sell from (a purchase needs
+one, and the APK here is a sideload), real products carrying the `yabloko_labs_pro` entitlement, and your own
+AdMob app id and unit id. The code is ready for all three; none of them can be conjured from this
+machine. Two things worth knowing before the ad side earns anything: AdMob only reports
+per-impression revenue once *Impression-level ad revenue* is switched on in its dashboard, and
+RevenueCat's ad charts want Charts v3 — without the first, the tracker receives impressions and no
+money.
 
 ## Architecture
 
@@ -121,6 +175,12 @@ EXPO_PUBLIC_ONME_BACKEND_URL=https://onme.example.com npm start
 The app runs with no backend configured: the try-on screen explains that it has nowhere to send the
 photos instead of failing with a network error.
 
+**Expo Go is no longer enough.** OnMe now carries two native modules — RevenueCat's purchases SDK
+and Google Mobile Ads — so the app needs a build of its own: `npx expo run:android`, or the release
+APK from the download folder. In Expo Go it stops at the first import of either SDK. The web target
+is unaffected: Metro resolves `services/ads.web.ts` for it, so the browser bundle and the capture
+run in `videos/` keep working.
+
 | Script | What it does |
 |---|---|
 | `npm start` | Expo dev server (add `--android`, `--ios`, `--web`) |
@@ -129,7 +189,8 @@ photos instead of failing with a network error.
 | `npm run server:smoke` | boots the real server offline and walks every refusal — spends nothing |
 | `npm run preflight` | asks one question: **will the app's exact URL make a picture right now?** |
 | `npm run lint` | `expo lint` |
-| `npm run icons` | rebuilds the launcher icon, the splash, the adaptive layers, the favicon and the in-app logo tile from `assets/brand/onme-logo.png` (needs `ffmpeg`) |
+| `npm run icons` | rebuilds the launcher icon, the splash, the adaptive layers, the favicon and the in-app logo tile from `assets/brand/onme-logo.png` (needs `ffmpeg`). The logo is a rounded tile sitting on a **white canvas**, which is the trap here: the script measures the tile on each axis, cuts a fraction of a percent inside its antialiased edge, and cuts the mask from the tile's own outline, found by scanning every row and column for where the artwork begins — the outline is not a circle, so a modelled corner leaves canvas wedges in every corner, and canvas anywhere is a pale rim around the icon on a phone. The launcher icon is then made **full bleed**: the tile's rounded corners would otherwise show as wedges inside the launcher's own mask. The adaptive icon's two layers get the same treatment: the background is built from the artwork's own edge colours carried outwards, because a flat colour behind the foreground shows through the launcher's mask as a ring around the logo — the same border again, in the one place the artwork itself cannot hide it — and the monochrome layer takes its shape from the artwork's alpha channel rather than its luminance, which otherwise leaves an opaque white square for Android to tint into a blank tile. Android packages the `mipmap-*` copies that `npx expo prebuild` makes from this file, so re-run prebuild before the next APK |
+| `npm run web` | the app's web target. `metro.config.js` puts `wasm` on Metro's asset list (for `expo-sqlite`) and sends the two headers that make the dev server cross-origin isolated, so the bundle builds and SQLite's worker can use `SharedArrayBuffer` |
 
 ### Configuration
 
@@ -139,6 +200,8 @@ One `.env` at the repository root is read by both sides.
 |---|---|---|
 | `EXPO_PUBLIC_ONME_BACKEND_URL` | app | public. Must be `https://` in a release build — a photo of a person is not sent over plain `http`, and the app refuses instead of doing it silently. |
 | `EXPO_PUBLIC_ONME_BACKEND_TOKEN` | app | public by construction (it ships in the bundle). Send it only when the backend sets `ONME_CLIENT_TOKEN`. |
+| `EXPO_PUBLIC_REVENUECAT_KEY` | app | the public SDK key for this build's store: the Android app's `goog_…` key from the RevenueCat project, or a `test_…` Test Store key — which is what the published APK was built with. Public by construction: it can read offerings and start a purchase, it cannot read a customer list. Empty means no store, and the free allowance is the whole product. What this is *not*: a RevenueCat project id (`proja…`) names the dashboard container and is what the server API v2 addresses; the client SDK only ever takes a key. |
+| `androidAppId`, `iosAppId` in `app.json`, and the ad unit in `src/services/ads.ts` | app | Google's test ids, so test ads are really served. Replace all three with your own AdMob ids to earn anything. |
 | `FAL_KEY` | **server only** | never bundled, never logged, never returned by an endpoint, never named `EXPO_PUBLIC_*`. |
 | `ONME_TRY_ON_MODEL` | server | override the rented model. |
 | `ONME_PRESERVE_POSE`, `ONME_ASPECT_RATIO` | server | defaults `true` and `3:4`; the rented model's parameters. |
@@ -149,6 +212,7 @@ One `.env` at the repository root is read by both sides.
 | `ONME_CODEX_REFRESH` | server | `off` stops the one disk write in the server: putting a refreshed subscription token back. |
 | `ONME_CODEX_TIMEOUT_MS` | server | one generation's ceiling. Default `300000`; a real one took ~45s. |
 | `ONME_PUBLIC_BASE_URL` | server | the base the app should collect a picture from. Defaults to the request's own host, which is usually right. |
+| `ONME_DOWNLOAD_URL` | server | where a bare visit to the backend's own hostname is sent. That hostname serves the API, so somebody who opens it in a browser used to get `{"error":"not_found"}`; with this set — it defaults to this deployment's download page — the root answers a 302 to the build, and an empty value turns the hop off. |
 | `ONME_LOOK_TTL_MS`, `ONME_LOOK_MAX_ENTRIES`, `ONME_LOOK_MAX_BYTES` | server | how long a generated picture waits in memory and how many may wait. Defaults: 10 minutes, 32, 96 MB. |
 | `ONME_CLIENT_TOKEN` | server | require a token on `/tryon`. |
 | `ONME_MAX_IMAGE_BYTES`, `ONME_MAX_UPLOAD_BYTES`, `ONME_MAX_TRYONS_PER_MINUTE`, `ONME_MAX_CONCURRENT_TRYONS` | server | default 12 MB per photo, 40 MB per request, 6/min, 2 at once. |
@@ -168,14 +232,90 @@ to make sure it never leaks a credential field.
 | Types | `npx tsc --noEmit` | clean |
 | Lint | `npx expo lint` | clean |
 | The device path | `npm run preflight` against a local backend | passes in both states: an unconfigured backend (reports that it cannot make a picture yet, and that it refuses before reading a photo) and a configured one (415/400/400/404 all confirmed) |
+| The release APK | `./gradlew assembleRelease` in `android/`, then `aapt`, `apksigner` and `unzip` against the artifact | **BUILD SUCCESSFUL**, 64,223,903 bytes, package `com.yablokolabs.onme`, `versionCode 1`/`versionName 1.0.0`, `minSdk 24`, `targetSdk 36`, arm64-v8a only, the same debug certificate, and `android:debuggable` reading `true` — which the Test Store key requires, since RevenueCat's SDK refuses a non-debuggable build and `DefaultIsDebugBuildProvider` reads exactly that manifest flag. React Native's dev support does *not* follow it: `ReactBuildConfig` is generated per build type and the shipped copy comes from the `ReactAndroid_release` source set, so the app still loads the bundle inside the APK. The price is size — a debuggable build keeps dex debug info and full resource paths, 51.1 → 61.0 MiB across the two SDK additions, and 0.2 MiB more for the icon's full-bleed layers — and no store would accept it, which is what the plugin gating on the key is for. The bundled JS carries the live backend hostname, the Test Store key, the entitlement `yabloko_labs_pro`, the `presentPaywallIfNeeded` call, the rewarded ad unit and the `tryon_extra_picture` placement, and the RevenueCat ad tracker — and the hosted paywall is really linked rather than merely imported: `com.revenuecat.purchases.ui.revenuecatui.*` is in the dex, not just requested in the manifest. The two SDKs are really in the build, not just imported: `com.android.vending.BILLING`, `com.google.android.gms.permission.AD_ID` and the ads-services permissions are declared, and `com.google.android.gms.ads.APPLICATION_ID` is in the manifest with the app id from `app.json`. The `ic_launcher`/`ic_launcher_round` inside it are the current full-bleed icon: the packaged 192×192 and 144×144 webps were sampled at their corners and are the icon's own colours (a salmon `253,171,171` top-left) rather than white |
+| The app's web target | `npx expo export --platform web` | 6 static routes (`/`, `/tryon`, `/look`, `/settings`, `/_sitemap`, `/+not-found`); it is where the demo video's screenshots of the app come from |
+| The demo video | `tsc --noEmit` and `biome check` in `videos/`, then a frame-by-frame render | 3257 frames, 54.28s, 1920×1080 @ 60fps, h264 + AAC stereo; audio mean −17.8 dB / peak −0.9 dB; 14 sampled frames all distinct |
 
 The preflight makes no provider call and uploads no photograph: every probe it sends is rejected
 before a generation could be paid for.
+
+## The demo video
+
+`https://onme-dl.yablokolabs.com/OnMe-demo.mp4` — 54 seconds, 1920×1080, narrated by an AI voice
+over a quiet ambient bed. It walks the two-photo flow, the press, the wait, and the reveal; the
+picture it reveals is a **real** try-on made by the live backend, and the two photos it starts from
+are the two that went in. It closes on the one address that gets you the app —
+`onme-dl.yablokolabs.com/OnMe-1.0.0.apk`, not the backend's own hostname.
+
+Every app screen in it is a capture of the app's own build (`videos/assets/app/`), so the labels
+and buttons in the video are the ones the app has — including the press on **See it on you**,
+which is drawn on that button's own rectangle in the capture, and the waiting screen, which came
+from a real request.
+
+It lives in `videos/` as its own project ([videowright](https://github.com/scosman/videowright):
+the video is HTML and CSS, rendered frame by frame). `videos/README.md` covers building it;
+`videos/videos/demo_video/PLAN.md` covers why it says what it says, and
+`videos/videos/demo_video/audio/audio_plan.md` documents the mix.
 
 ## Getting it onto a phone
 
 The app is complete; what a phone run needs is a *reachable, configured* backend. In order:
 
+0. **Install the APK.** Download `https://onme-dl.yablokolabs.com/OnMe-1.0.0.apk` on the phone
+   and open it; Android will ask to allow installing from this source, because the APK is signed
+   with the Android **debug** keystore rather than a release key. That signature is fine for
+   testing on a phone you own and it is not fit for Play — it is one keystore shared by every
+   debug build of anything, so it can only ever be a sideload. Rebuild it after a code change with:
+
+   ```bash
+   cd android
+   JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ANDROID_HOME=$HOME/Android/sdk ./gradlew assembleRelease
+   # artifact: android/app/build/outputs/apk/release/app-release.apk
+   ```
+
+   `android/` and `ios/` are gitignored — they are generated, and `npx expo prebuild` recreates
+   them. The build above needs JDK 21 and the Android SDK; everything else it needs is applied by
+   `plugins/with-test-store-android.js` during prebuild, so **`npx expo prebuild` produces a
+   correct project on its own**. That plugin exists because a generated directory makes every hand
+   edit a trap — prebuild drops them silently, which has already cost this project two builds:
+
+   - `android/gradle.properties`: `reactNativeArchitectures=arm64-v8a` (without it the build
+     compiles all four ABIs and the APK balloons), a 3 GB `org.gradle.jvmargs` (the default 2 GB
+     runs out against three native SDKs), and `RNGMA_ANDROID_BACKEND=classic`, which
+     `react-native-google-mobile-ads` reads before falling back to a `rootProject.ext` lookup an
+     Expo project never defines — without it the build dies inside that module's own `build.gradle`.
+   - `android/app/build.gradle`: `debuggable true` on the release build type, **only while the app
+     is built with a Test Store key.** RevenueCat's SDK deliberately crashes a Test Store key in a
+     build that is not debuggable (`DefaultIsDebugBuildProvider` reads the manifest's debuggable
+     flag) so that such a build can never reach a store by accident. This app's shipping mode — a
+     debug-signed sideload with no store listing to use a real key with — is exactly that case. The
+     flag follows the key: configure
+     a real `goog_…` key and prebuild leaves it out. It does **not** turn on React Native's dev
+     support, which follows the *build type* — the APK still carries and loads its own JS bundle.
+
+   Because the launcher icons under `android/app/src/main/res/mipmap-*/` are written *by* prebuild
+   from `assets/images/icon.png`, a change to the icon needs `npm run icons` **and** a prebuild
+   before the next APK, or the build keeps shipping the old one. Publishing a new build is a copy
+   into the download folder:
+
+   ```bash
+   cp android/app/build/outputs/apk/release/app-release.apk ~/onme-downloads/OnMe-<version>.apk
+   ```
+
+   `onme-downloads/` is served by a small static file server on `127.0.0.1:8093` (a transient
+   systemd unit, `onme-dl`) behind the `onme-dl.yablokolabs.com` ingress rule in
+   `deploy/cloudflared-config.yml`. It exists to move build output — the APK, the demo video, the
+   store-sized icon and a couple of screenshots, and the audio candidates that were picked for the
+   video — to a phone, with no other exposure:
+
+   | File | What it is |
+   |---|---|
+   | `OnMe-1.0.0.apk` | the sideloadable build |
+   | `OnMe-demo.mp4` | the demo video |
+   | `OnMe-demo-frames.png` | eight frames of it, t = 3/9/15/21/28.5/38/42/53.5s |
+   | `OnMe-demo-reveal.png` | the reveal frame, full resolution |
+   | `OnMe-icon-1024.png` | the app icon, 1024×1024, full bleed — byte-identical to `assets/images/icon.png`, so the store-sized icon and the one inside the APK are the same file |
+   | `OnMe-screen-home.png`, `OnMe-screen-tryon.png` | screenshots of the app at phone resolution, no device frame |
 1. **Give the backend a model.** Done, for now: there is no `FAL_KEY`, but there is a
    `codex login` on this machine, so the backend drives that subscription and `/health` reports
    `tryOnReady: true` with `tryOnProvider: codex`. Put a real `FAL_KEY` in the backend's `.env` and
@@ -186,9 +326,10 @@ The app is complete; what a phone run needs is a *reachable, configured* backend
    and a release build refuses a plain `http://` backend on purpose.
 3. **Point the app at it.** Done: `.env` carries `EXPO_PUBLIC_ONME_BACKEND_URL` and the matching
    `EXPO_PUBLIC_ONME_BACKEND_TOKEN`, and `npm run preflight` passes against the live hostname.
-4. **Run it on the phone.** With no APK yet, the app runs from the dev server, which the second
-   hostname exposes to the phone: Metro listens on `127.0.0.1:8091` and the tunnel maps
-   `onme-dev.yablokolabs.com` to it, so no native build and no Expo account are involved.
+4. **Or run it from the dev server.** The APK in step 0 is the way to install it; this path needs
+   no build at all and is still useful while changing code. Metro listens on `127.0.0.1:8091` and
+   the tunnel maps `onme-dev.yablokolabs.com` to it, so neither a native build nor an Expo account
+   is involved.
 
    The dev server runs as a transient systemd unit, so it is not started at boot:
 
@@ -207,6 +348,12 @@ The app is complete; what a phone run needs is a *reachable, configured* backend
    the `onme-dev` ingress rule once a real build exists.
 
 ### On an iPhone as well as an Android phone
+
+**This section is the record of a JS-only app, and the app is not one any more** (2026-10-01): the
+RevenueCat and Google Mobile Ads SDKs are native modules, so neither phone opens OnMe in Expo Go
+now — see *Expo Go is no longer enough* above for what that changed, and *Getting it onto a phone*
+for what an install takes instead. Metro still serves each platform its own bundle, which is what
+the checks below are about.
 
 The same URL works on both, and Metro serves each platform its own bundle, so an iPhone and an
 Android phone can be open at once. What makes iOS work is not luck:
@@ -239,11 +386,16 @@ Two things to know before relying on an iPhone:
   `photosPermission` sentence in `app.json` lives in an app's own `Info.plist`, which Expo Go does
   not use. It reads correctly in a real build; in Expo Go it is cosmetic.
 
-For an installable APK later: `npx eas build --profile preview --platform android`. For an IPA,
-`--platform ios`, which additionally needs an Apple signing identity and — for anyone but the
-account holder — a paid developer account. Both need an Expo login and an `extra.eas.projectId` in
-`app.json`, neither of which exists yet, and either would bake in the same `EXPO_PUBLIC_*` values
-this checkout already has.
+The APK in step 0 was built without EAS: `npx expo prebuild --platform android` (already run) plus
+Gradle, which needs no Expo account, no cloud build and no project id. Its one real limitation is
+the debug signature — a build to hand to anyone outside this machine should go through EAS
+(`npx eas build --profile preview --platform android`), which needs an Expo login and an
+`extra.eas.projectId` in `app.json` and produces a real release signature. Either route bakes in
+the same `EXPO_PUBLIC_*` values this checkout already has, so the backend URL is fixed at build
+time: point `.env` at a different backend and the app must be rebuilt.
+
+An IPA is the same idea with a much higher bar: an Apple signing identity plus — for anyone but
+the account holder — a paid developer account.
 
 The backend on this machine is on `127.0.0.1:8788` with its own tunnel and hostname, so it never
 collides with the other app deployed here (which holds 8787 and `psst.yablokolabs.com`).
