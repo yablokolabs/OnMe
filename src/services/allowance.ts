@@ -15,7 +15,7 @@
  */
 
 /** Pictures every install gets for free. */
-export const FREE_TRY_ONS = 10;
+export const FREE_TRY_ONS = 50;
 
 export interface Allowance {
   /** Pictures OnMe has made on this phone. */

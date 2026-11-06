@@ -302,6 +302,72 @@ export async function startFakeCodex(options = {}) {
 }
 
 /**
+ * A local stand-in for the OnMe try-on function deployed on Modal: JSON with two
+ * base64 photos in, PNG bytes out. It records the proxy-auth headers so a test
+ * can prove they were sent, and answers `status` instead when one is given.
+ */
+export async function startFakeModal(options = {}) {
+  const requests = [];
+  const png = options.png ?? testPng(768, 1024);
+
+  const server = createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      requests.push({
+        method: req.method ?? '',
+        url: req.url ?? '',
+        modalKey: String(req.headers['modal-key'] ?? ''),
+        modalSecret: String(req.headers['modal-secret'] ?? ''),
+        contentType: String(req.headers['content-type'] ?? ''),
+        body: Buffer.concat(chunks),
+      });
+
+      const answer = () => {
+        const status = Number(options.status ?? 200);
+        if (status !== 200) {
+          res.writeHead(status, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ detail: 'fake modal failure' }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': options.contentType ?? 'image/png' });
+        if (options.dropMidBody) {
+          // The connection breaks after the headers, partway through the picture.
+          res.write((options.body ?? png).subarray(0, 16));
+          setTimeout(() => res.socket?.destroy(), 20);
+          return;
+        }
+        res.end(options.body ?? png);
+      };
+      // A delay stands in for a cold start or a wait for a GPU.
+      setTimeout(answer, Number(options.delayMs ?? 0));
+    });
+    req.on('error', () => {});
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  return {
+    base: `http://127.0.0.1:${server.address().port}`,
+    requests,
+    png,
+    /** The parsed body of the last request, or null. */
+    lastInput: () => {
+      const last = requests.at(-1);
+      if (!last) return null;
+      try {
+        return JSON.parse(last.body.toString('utf8'));
+      } catch {
+        return null;
+      }
+    },
+    close: async () => {
+      await new Promise((resolve) => server.close(resolve));
+    },
+  };
+}
+
+/**
  * Spawns the real backend with the model pointed at a local fake.
  *
  * The Codex login is pointed at a path that does not exist unless a test says
@@ -321,6 +387,9 @@ export async function startBackend(extraEnv = {}) {
       ONME_CLIENT_TOKEN: '',
       ONME_CODEX_AUTH_PATH: path.join(os.tmpdir(), 'onme-test-no-codex-login.json'),
       ONME_CODEX_REFRESH: 'off',
+      ONME_MODAL_URL: '',
+      MODAL_PROXY_KEY: '',
+      MODAL_PROXY_SECRET: '',
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],

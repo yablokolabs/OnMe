@@ -13,6 +13,9 @@ content-type: application/json
 }
 
 200 { "image": { "mimeType": "image/jpeg", "data": "<base64>" } }
+202 { "ok": true, "job": { "statusPath": "/tryon/jobs/<id>" } }
+       only with `Prefer: respond-async`: the photos are checked and the request is
+       answered at once, and the picture is made after it
    400 malformed / not an image / no consent asserted
    401 token required or wrong
    413 too large
@@ -20,6 +23,12 @@ content-type: application/json
    429 rate limited
    502 the provider failed, or the model refused to draw it
    503 no try-on model configured on this boot
+
+GET /tryon/jobs/<id>
+   200 { "status": "pending" }
+       { "status": "done", "look": { "imageUrl": "…", … } }
+       { "status": "failed", "error": "<a sentence for the user>" }
+   404 never handed out, forgotten by a restart, or collected more than 10 minutes ago
 
 GET /look/<id>
    200 the picture a try-on just made, as image/png
@@ -42,8 +51,8 @@ parser. The cost is base64's 4/3 inflation and both images in memory for one req
 
 ## The two promises
 
-- **No photograph is written to disk.** The photos live in memory for the length of one request
-  and are then dropped. No temp file, no cache, no bucket, no database. `scripts/smoke.js`
+- **No photograph is written to disk.** The photos live in memory for the length of one try-on
+  and are then dropped; for a job, that is until the model answers, not until the request ends. No temp file, no cache, no bucket, no database. `scripts/smoke.js`
   snapshots the file tree before and after the run and fails if anything changed. A generated
   picture stays in memory too, for the few minutes it waits to be collected. The single write this
   server makes is not a photograph: a subscription access token that was close to expiry, put back
@@ -61,29 +70,36 @@ parser. The cost is base64's 4/3 inflation and both images in memory for one req
 | File | What it holds |
 |---|---|
 | `src/index.js` | the whole API: routing, the checks in the order above, `readBody` (which drains an oversized request rather than destroying the socket), the abort on `res.on('close')`, and `/health` |
-| `src/env.js` | where configuration comes from: `ONME_ENV_FILE` > `server/.env` > repository-root `.env`, with a real environment variable always winning |
+| `src/env.js` | where configuration comes from: `ONME_ENV_FILE` alone when set, otherwise `server/.env` > repository-root `.env`, with a real environment variable always winning |
 | `src/limits.js` | the ceilings: 12 MB per photo, 40 MB per request, 6 try-ons a minute, 2 at once |
 | `src/tryon/photos.js` | pure byte-signature sniffing (PNG/JPEG/WebP/HEIC), base64 validation, the required consent assertion |
 | `src/tryon/fal.js` | the hand-rolled fal queue client: `POST` the model, poll `status_url`, `GET response_url` |
 | `src/tryon/codex.js` | the subscription client: reads the Codex login, refreshes its token when it is close to expiry, posts both photos to the Codex event stream and reads the picture out of it |
 | `src/tryon/looks.js` | the hand-off: a generated picture held in memory for minutes under an unguessable id, then forgotten |
+| `src/tryon/jobs.js` | try-ons sent as jobs: each job's outcome (never a photo) in memory under an unguessable id, kept 10 minutes after it ends |
+| `src/tryon/modal.js` | the Modal client: both photos to OnMe's own FASHN VTON function, authenticated with a Modal proxy token, the PNG back |
 
 HEIC is recognised and refused with the fix spelled out (`JPEG or PNG`, iOS *Most Compatible*),
 rather than being passed on to fail at the provider. In practice the app never sends one:
 `expo-image-picker` with `base64: true` re-encodes every pick to JPEG on both platforms.
 
-## Two providers, one endpoint
+## Three providers, one endpoint
 
 Which model makes the picture is decided at boot, not by the client:
 
 | Provider | When it is used | What comes back |
 |---|---|---|
 | `fal` | a `FAL_KEY` is set | a URL the app downloads directly |
-| `codex` | no key, but a Codex login is on this machine | the picture itself, served back from `GET /look/<id>` |
+| `modal` | no `FAL_KEY`, but `ONME_MODAL_URL` and both halves of the Modal proxy token are set | the picture itself, served back from `GET /look/<id>` |
+| `codex` | neither, but a Codex login is on this machine | the picture itself, served back from `GET /look/<id>` |
 
-`ONME_TRYON_PROVIDER=fal|codex` pins one; by default a rented model wins when there is a key for it,
+`ONME_TRYON_PROVIDER=fal|modal|codex` pins one; by default a rented model wins when there is a key for it,
 because it is the dedicated try-on model. With neither, every try-on is a 503 decided before the
 photos are read.
+
+The Modal function (`modal/onme_tryon.py`) takes the first free GPU of L4, A10G and L40S. A cold
+start that has to wait for one can take minutes, which is longer than the Cloudflare tunnel holds a
+request open (about 100 seconds); that is why the app sends every try-on as a job.
 
 The subscription path has one limit worth knowing, and it is not a bug: the image tool moderates
 what it draws. An outfit carrying a character or a brand it recognises is refused, and so is some

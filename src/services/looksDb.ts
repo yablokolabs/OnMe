@@ -190,7 +190,7 @@ export async function deleteEverything(): Promise<void> {
 /*
  * Resetting the allowance with everything else is a choice, and worth stating.
  *
- * It costs the user every picture they have made to win back ten free ones, so it
+ * It costs the user every picture they have made to win back the free ones, so it
  * is not a way to live for free — and the alternative, keeping a counter behind
  * after the screen promised that everything OnMe holds is gone, is the kind of
  * small lie the rest of this app exists not to tell. Pro is different: it is not

@@ -2,7 +2,7 @@
  * The free allowance, and the two ways one more picture can be had.
  *
  * This is the arithmetic the try-on gate, the paywall and Settings all read, so it
- * is pinned here without a device, a database or a store: ten pictures for nothing,
+ * is pinned here without a device, a database or a store: fifty pictures for nothing,
  * an ad buys exactly one, Pro is unlimited, and counters that have gone strange can
  * never take away a picture someone never made.
  */
@@ -18,6 +18,10 @@ import {
   remainingFree,
 } from '../../src/services/allowance.ts';
 import { parseAllowance } from '../../src/services/lookRows.ts';
+
+test('every install gets fifty free pictures', () => {
+  assert.equal(FREE_TRY_ONS, 50);
+});
 
 test('a new install has every free picture', () => {
   assert.equal(remainingFree({ used: 0, bonus: 0 }), FREE_TRY_ONS);

@@ -15,7 +15,7 @@ probably the wrong change.
 - **The photos never leave the device except to the OnMe backend.** No third-party key ever reaches
   the app; the backend holds `FAL_KEY` and nothing else does.
 - **Nothing is written to disk on the backend.** Photos are held in memory for the length of one
-  request and then dropped.
+  try-on and then dropped.
 - **No dependency in the backend.** `server/` is Node 22 built-ins and `fetch` only. That keeps
   `/health` and the deploy small, and there is no tree to keep patched.
 - **No attribution footers.** No "generated with", "built with", or credit lines in the README, the

@@ -2,6 +2,7 @@
   "expo": {
     "name": "OnMe",
     "slug": "onme",
+    "owner": "yabloko-labs",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -57,6 +58,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "b7c1427b-5850-4214-a341-330abdfe9e7d"
+      }
     }
   }
 }
