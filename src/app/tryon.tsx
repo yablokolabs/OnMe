@@ -11,7 +11,7 @@
  */
 
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 
@@ -340,7 +340,17 @@ function Working({
   personPreview: string | null;
   outfitPreview: string | null;
 }) {
-  const copy = describeStage(stage);
+  // A long wait is a wait for a GPU to start, not a stuck app, and it says so.
+  // `Working` is mounted afresh for every try-on, so this starts false each time.
+  const [slow, setSlow] = useState(false);
+  const making = stage.phase === 'making';
+  useEffect(() => {
+    if (!making) return;
+    const timer = setTimeout(() => setSlow(true), SLOW_MAKING_MS);
+    return () => clearTimeout(timer);
+  }, [making]);
+
+  const copy = describeStage(stage, slow && making);
 
   return (
     <View style={styles.working}>
@@ -371,7 +381,10 @@ function Working({
   );
 }
 
-function describeStage(stage: ScreenStage): { title: string; body: string } {
+/** After this long, "Making it" explains why it is taking so long. */
+const SLOW_MAKING_MS = 60_000;
+
+function describeStage(stage: ScreenStage, slow: boolean): { title: string; body: string } {
   switch (stage.phase) {
     case 'sending':
       return {
@@ -384,7 +397,9 @@ function describeStage(stage: ScreenStage): { title: string; body: string } {
     case 'making':
       return {
         title: 'Making it',
-        body: 'Putting the outfit on you, keeping your face, your hair and your pose.',
+        body: slow
+          ? 'Waiting for a free GPU. This can take a few minutes.'
+          : 'Putting the outfit on you, keeping your face, your hair and your pose.',
       };
     case 'saving':
       return {

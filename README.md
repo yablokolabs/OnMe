@@ -33,7 +33,7 @@ Be precise about this, because the demo is easy to overstate:
 | **An installable Android build** | **built** — a release APK is downloadable at `https://onme-dl.yablokolabs.com/OnMe-1.0.0.apk` (arm64-v8a, debug-signed, `versionCode 1`, `minSdk 24`, `targetSdk 36`). Built locally with Gradle against the same `EXPO_PUBLIC_*` values in `.env`, so it talks to the live backend. See *Getting it onto a phone* |
 | An installable iOS build | not built — needs an Apple signing identity and an Expo project id |
 | **A demo video** | **built** — 54s, 1920×1080, narrated: `https://onme-dl.yablokolabs.com/OnMe-demo.mp4`. Composed in `videos/` with [videowright](https://github.com/scosman/videowright); the reveal in it is a real try-on made by the live backend, and every app screen in it is a capture of the app itself |
-| **OnMe Pro** — ten free try-ons per install, then either a subscription or a rewarded video | **built, and live in the shipped APK** — the counters live in SQLite, the purchase goes through RevenueCat, and the rewarded video through Google Mobile Ads. The APK is built against a RevenueCat **Test Store** key, so a purchase can be completed and restored with no Play listing; with `EXPO_PUBLIC_REVENUECAT_KEY` empty the build has no store at all and the ten free pictures are the whole app. See *What it charges for* |
+| **OnMe Pro** — 50 free try-ons per install, then either a subscription or a rewarded video | **built, and live in the shipped APK** — the counters live in SQLite, the purchase goes through RevenueCat, and the rewarded video through Google Mobile Ads. The APK is built against a RevenueCat **Test Store** key, so a purchase can be completed and restored with no Play listing; with `EXPO_PUBLIC_REVENUECAT_KEY` empty the build has no store at all and the 50 free pictures are the whole app. See *What it charges for* |
 | Accounts, sign-in, per-user entitlement | not built — the shared token is a throttle, not authentication. Pro needs no account: RevenueCat ties the receipt to the store account this phone is signed in to |
 | Generating on the device | not built, deliberately: there is no GPU here, so every generation happens off the device — rented from fal.ai, or made by the subscription login on the server |
 
@@ -72,7 +72,7 @@ cannot afford to do.
 
 ## What it charges for
 
-Ten try-ons per install are free. After that there are two ways to get one more picture, and both
+50 try-ons per install are free. After that there are two ways to get one more picture, and both
 are already wired into the app:
 
 - **OnMe Pro** — a monthly subscription that removes the count. The screen is RevenueCat's **own
@@ -88,7 +88,7 @@ else: it never plays on its own and never covers the picture someone just made. 
 test ad unit until a real AdMob unit id replaces it, so the ads are really served and earn nothing.
 
 Both are counted in the same place the pictures are. `credits` in `onme.db` holds two integers —
-`used` and `bonus` — the arithmetic between them and the free ten lives in
+`used` and `bonus` — the arithmetic between them and the free allowance lives in
 `src/services/allowance.ts`, and a picture is written down **after** the file is on the phone: a
 refused or failed try-on costs nothing. *Delete everything* resets those counters along with
 everything else, because the screen promises it removes what OnMe holds. A subscription survives
@@ -127,17 +127,20 @@ money.
 full-body photo of you  +  outfit photo        (both on the phone)
   -> Expo app (expo-router, expo-sqlite)       picks, copies, remembers
        POST /tryon                             JSON, base64 photos, consent timestamp
+       Prefer: respond-async                   202 at once; the phone polls GET /tryon/jobs/<id>
        Authorization: ?token=…                 only when ONME_CLIENT_TOKEN is set
   -> OnMe backend (Node 22, built-ins only)
        refuse before reading: 405 -> 401 -> 503 (no model) -> 415 -> 413 -> 429
        sniff the bytes: must really be PNG/JPEG/WebP; HEIC is refused with a fix
        provider = fal  : queue: POST model -> poll status_url -> GET response_url
+       provider = modal: POST both photos to OnMe's FASHN VTON function; the PNG comes back
        provider = codex: POST /responses with both photos; the picture returns in the stream
   -> fal-ai/image-apps-v2/virtual-try-on        preserve_pose, 3:4
+     or FASHN VTON v1.5 on Modal                first free GPU of L4, A10G, L40S
      or gpt-image-2-codex                      driven by the server's ChatGPT login
   -> one generated image
        fal:   a URL the phone downloads directly
-       codex: the bytes — held in the backend's memory for minutes under an unguessable id, and
+       modal, codex: the bytes — held in the backend's memory for minutes under an unguessable id, and
               collected by the phone from GET /look/<id>
   -> saved on the phone, in SQLite, never kept on the server
 ```

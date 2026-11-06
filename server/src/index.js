@@ -43,6 +43,8 @@ import { loadServerEnv } from './env.js';
 import { LIMITS, describeLimits } from './limits.js';
 import { getFalConfig, isFalConfigured, runVirtualTryOn as runVirtualTryOnWithFal } from './tryon/fal.js';
 import { describeLookStore, getLook, rememberLook } from './tryon/looks.js';
+import { getModalConfig, isModalConfigured, runVirtualTryOn as runVirtualTryOnWithModal } from './tryon/modal.js';
+import { createJob, describeJob, failJob, finishJob } from './tryon/jobs.js';
 import { describeBytes, normalizeConsent, normalizePhotos } from './tryon/photos.js';
 
 loadServerEnv();
@@ -69,6 +71,8 @@ const TRYON_PATH = '/tryon';
 const DOWNLOAD_URL = (process.env.ONME_DOWNLOAD_URL ?? 'https://onme-dl.yablokolabs.com/').trim();
 /** Where the app collects a picture the backend has to hold itself. */
 const LOOK_PATH_PREFIX = '/look/';
+/** Where the app asks after a try-on it sent as a job. */
+const JOBS_PATH_PREFIX = '/tryon/jobs/';
 
 /** Try-ons currently generating, for the concurrency cap. */
 let activeTryOns = 0;
@@ -87,18 +91,20 @@ const counters = {
 /**
  * Which model makes the picture on this boot.
  *
- * Two providers, one product. `fal` rents a dedicated try-on model and returns a
- * URL; `codex` drives a ChatGPT subscription logged in on this machine and
- * returns the picture itself. `ONME_TRYON_PROVIDER` pins one (`fal` or `codex`);
- * the default picks a rented model when there is a key for it, and falls back to
- * the subscription so that a machine with only a Codex login can still make a
- * picture. Null means this backend honestly cannot generate.
+ * Three providers, one product. `fal` rents a dedicated try-on model and returns
+ * a URL; `modal` is OnMe's own FASHN VTON deployment on a rented GPU and returns
+ * the picture itself; `codex` drives a ChatGPT subscription logged in on this
+ * machine and also returns the picture. `ONME_TRYON_PROVIDER` pins one (`fal`,
+ * `modal` or `codex`); the default prefers them in that order. Null means this
+ * backend honestly cannot generate.
  */
 function getTryOnProvider() {
   const wanted = String(process.env.ONME_TRYON_PROVIDER ?? 'auto').trim().toLowerCase();
   if (wanted === 'fal') return isFalConfigured() ? 'fal' : null;
+  if (wanted === 'modal') return isModalConfigured() ? 'modal' : null;
   if (wanted === 'codex') return isCodexConfigured() ? 'codex' : null;
   if (isFalConfigured()) return 'fal';
+  if (isModalConfigured()) return 'modal';
   if (isCodexConfigured()) return 'codex';
   return null;
 }
@@ -118,6 +124,12 @@ function getTryOnSummary() {
       // The image tool chooses portrait framing from the person photo.
       aspectRatio: 'auto',
     };
+  }
+
+  if (provider === 'modal') {
+    // FASHN is maskless: it keeps the body and pose by construction, and frames
+    // the picture from the person photo.
+    return { provider, model: getModalConfig().model, preservePose: true, aspectRatio: 'auto' };
   }
 
   const fal = getFalConfig();
@@ -245,6 +257,65 @@ function readJsonBody(bytes) {
  * Every rejection that can be decided without spending anything is decided
  * before the body is read, in cost order: cheapest first.
  */
+const COULD_NOT_MAKE = 'OnMe could not make that picture. Try again, or with a different photo.';
+
+/**
+ * Runs the provider on two validated photos and returns the look the app is
+ * given, or the message the user sees. Provider detail stays in the log: it can
+ * name internals the app has no use for, and a request id is not the user's
+ * business.
+ */
+async function makeLook({ provider, person, outfit, origin, startedAt, signal }) {
+  const run =
+    provider === 'fal'
+      ? runVirtualTryOnWithFal
+      : provider === 'modal'
+        ? runVirtualTryOnWithModal
+        : runVirtualTryOnWithCodex;
+  const result = await run({ photos: { person, outfit }, signal });
+
+  if (!result.ok) {
+    counters.tryOnsFailed += 1;
+    console.log(`[onme] try-on failed after ${Date.now() - startedAt}ms: ${result.error}`);
+    return { ok: false, error: COULD_NOT_MAKE };
+  }
+
+  // A rented model hands back a URL the app downloads directly. A model that
+  // hands back the bytes has them held here for a few minutes under an
+  // unguessable id, and the app is given a URL of this server's own.
+  let imageUrl = typeof result.image.url === 'string' ? result.image.url : '';
+  if (imageUrl === '' && Buffer.isBuffer(result.image.bytes)) {
+    imageUrl = `${origin}${LOOK_PATH_PREFIX}${rememberLook(result.image)}`;
+  }
+  if (imageUrl === '') {
+    counters.tryOnsFailed += 1;
+    console.log('[onme] try-on produced no fetchable image');
+    return { ok: false, error: COULD_NOT_MAKE };
+  }
+
+  counters.tryOnsCompleted += 1;
+  const summary = getTryOnSummary();
+  const size = result.image.width > 0 ? `${result.image.width}x${result.image.height}` : 'unknown size';
+  // Sizes and timings only: never a filename, never a photo, never a person.
+  console.log(
+    `[onme] try-on generated by ${provider}: person=${describeBytes(person.bytes)} outfit=${describeBytes(
+      outfit.bytes
+    )} ${size} in ${Date.now() - startedAt}ms`
+  );
+
+  return {
+    ok: true,
+    look: {
+      imageUrl,
+      contentType: result.image.contentType,
+      width: result.image.width,
+      height: result.image.height,
+      model: result.model,
+      preservePose: summary.preservePose,
+    },
+  };
+}
+
 async function handleTryOnRequest(req, res, url) {
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'Use POST to send the two photos.' });
@@ -363,60 +434,38 @@ async function handleTryOnRequest(req, res, url) {
     }
 
     const { person, outfit } = validated.photos;
-    const result =
-      provider === 'fal'
-        ? await runVirtualTryOnWithFal({ photos: { person, outfit }, signal: controller.signal })
-        : await runVirtualTryOnWithCodex({ photos: { person, outfit }, signal: controller.signal });
+    const origin = requestOrigin(req);
 
-    if (!result.ok) {
-      counters.tryOnsFailed += 1;
-      // Provider detail stays in the log: it can name internals the app has no
-      // use for, and a request id is not the user's business.
-      console.log(`[onme] try-on failed after ${Date.now() - startedAt}ms`);
-      sendJson(res, 502, {
-        error: 'OnMe could not make that picture. Try again, or with a different photo.',
-      });
+    // A job answers now and makes the picture after: a slow model can then take
+    // as long as it needs without the proxy in front of this server timing out
+    // the request. Everything above still answers at once, so a bad photo is
+    // never turned into a job.
+    if (/\brespond-async\b/i.test(String(req.headers.prefer ?? ''))) {
+      const id = createJob();
+      sendJson(res, 202, { ok: true, job: { statusPath: `${JOBS_PATH_PREFIX}${id}` } });
+      try {
+        const outcome = await makeLook({ provider, person, outfit, origin, startedAt });
+        if (outcome.ok) finishJob(id, outcome.look);
+        else failJob(id, outcome.error);
+      } catch (error) {
+        // The 202 is already sent, so the job is the only place left to say it.
+        counters.handlerErrors += 1;
+        console.log(`[onme] try-on job error: ${(error instanceof Error ? error.message : String(error)).slice(0, 200)}`);
+        failJob(id, COULD_NOT_MAKE);
+      }
       return;
     }
 
-    counters.tryOnsCompleted += 1;
-
-    // A rented model hands back a URL the app downloads directly. A subscription
-    // model hands back the bytes, so this server holds them for a few minutes
-    // under an unguessable id and gives the app a URL of its own.
-    let imageUrl = typeof result.image.url === 'string' ? result.image.url : '';
-    if (imageUrl === '' && Buffer.isBuffer(result.image.bytes)) {
-      imageUrl = `${requestOrigin(req)}${LOOK_PATH_PREFIX}${rememberLook(result.image)}`;
-    }
-    if (imageUrl === '') {
-      counters.tryOnsFailed += 1;
-      console.log('[onme] try-on produced no fetchable image');
-      sendJson(res, 502, {
-        error: 'OnMe could not make that picture. Try again, or with a different photo.',
-      });
+    const outcome = await makeLook({ provider, person, outfit, origin, startedAt, signal: controller.signal });
+    if (!outcome.ok) {
+      sendJson(res, 502, { error: outcome.error });
       return;
     }
-
-    const summary = getTryOnSummary();
-    const size = result.image.width > 0 ? `${result.image.width}x${result.image.height}` : 'unknown size';
-    // Sizes and timings only: never a filename, never a photo, never a person.
-    console.log(
-      `[onme] try-on generated by ${provider}: person=${describeBytes(person.bytes)} outfit=${describeBytes(
-        outfit.bytes
-      )} ${size} in ${Date.now() - startedAt}ms`
-    );
 
     sendJson(res, 200, {
       ok: true,
       origin: 'backend',
-      look: {
-        imageUrl,
-        contentType: result.image.contentType,
-        width: result.image.width,
-        height: result.image.height,
-        model: result.model,
-        preservePose: summary.preservePose,
-      },
+      look: outcome.look,
       photos: { personBytes: person.bytes, outfitBytes: outfit.bytes },
     });
   } catch (error) {
@@ -444,6 +493,16 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (req.method === 'GET' && url.pathname.startsWith(JOBS_PATH_PREFIX)) {
+    const job = describeJob(url.pathname.slice(JOBS_PATH_PREFIX.length));
+    if (job === null) {
+      sendJson(res, 404, { error: 'That picture is no longer on the server. Try again.' });
+      return;
+    }
+    sendJson(res, 200, job);
+    return;
+  }
+
   if (url.pathname === TRYON_PATH) {
     void handleTryOnRequest(req, res, url);
     return;
@@ -457,7 +516,8 @@ function handleRequest(req, res) {
       // Booleans, names and numbers only: no key material, ever.
       falConfigured: isFalConfigured(),
       codexConfigured: isCodexConfigured(),
-      // Which of the two answers this boot, when either can.
+      modalConfigured: isModalConfigured(),
+      // Which provider answers this boot, when any can.
       tryOnProvider: summary.provider,
       // A try-on needs nothing but the model. One boolean, because there is one
       // half: unlike a pipeline with a local step and a rented one, this server

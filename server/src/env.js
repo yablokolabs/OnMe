@@ -22,15 +22,15 @@ const SERVER_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const REPO_ROOT = path.dirname(SERVER_ROOT);
 
 /**
- * Ordered by precedence: a file earlier in the list wins. `server/.env` exists
- * for a standalone deployment; the repository root `.env` is the development
- * default shared with the app.
+ * `ONME_ENV_FILE`, when set, is the only file read. Otherwise the list is ordered
+ * by precedence, a file earlier in the list winning: `server/.env` exists for a
+ * standalone deployment; the repository root `.env` is the development default
+ * shared with the app.
  */
-const CANDIDATES = [
-  process.env.ONME_ENV_FILE ?? null,
-  path.join(SERVER_ROOT, '.env'),
-  path.join(REPO_ROOT, '.env'),
-].filter((candidate) => typeof candidate === 'string');
+const CANDIDATES =
+  process.env.ONME_ENV_FILE === undefined
+    ? [path.join(SERVER_ROOT, '.env'), path.join(REPO_ROOT, '.env')]
+    : [process.env.ONME_ENV_FILE];
 
 /** @type {string[]} */
 const loadedFiles = [];

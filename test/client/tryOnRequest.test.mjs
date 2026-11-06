@@ -113,6 +113,25 @@ test('the phases are upload, then model — with no phase invented in between', 
   ]);
 });
 
+test('the model phase starts when the last byte is sent, even with no upload load event', async () => {
+  // React Native's XMLHttpRequest dispatches `progress` on `upload` and never
+  // `load`, so a phone sees only this sequence.
+  const { stages } = await send((fake) => {
+    fake.upload.onprogress?.({ lengthComputable: true, loaded: 50, total: 100 });
+    fake.upload.onprogress?.({ lengthComputable: true, loaded: 100, total: 100 });
+    fake.status = 200;
+    fake.responseText = JSON.stringify({ ok: true, look: { imageUrl: 'https://fal.media.example/a.png' } });
+    fake.onload?.();
+  });
+
+  assert.deepEqual(stages, [
+    { phase: 'sending', ratio: null },
+    { phase: 'sending', ratio: 0.5 },
+    { phase: 'sending', ratio: 1 },
+    { phase: 'making' },
+  ]);
+});
+
 test('a progress event that cannot be measured is reported as unmeasurable', async () => {
   // A chunked upload has no total, and a bar drawn from a guessed total would be
   // a lie about how much is left.
@@ -198,4 +217,76 @@ test('the request only settles once, whatever the transport reports afterwards',
   });
 
   assert.equal(result.ok, true);
+});
+
+/* A try-on as a job: a 202 at once, then polling until the picture is made. */
+
+/** Answers each poll with the next of `answers`, and records the URLs asked. */
+function fakePolls(answers) {
+  const asked = [];
+  globalThis.fetch = async (url) => {
+    asked.push(String(url));
+    const next = answers.shift();
+    if (next instanceof Error) throw next;
+    return new Response(JSON.stringify(next.body ?? {}), { status: next.status ?? 200 });
+  };
+  return asked;
+}
+
+function accepted(fake) {
+  fake.upload.onprogress?.({ lengthComputable: true, loaded: 100, total: 100 });
+  fake.status = 202;
+  fake.responseText = JSON.stringify({ ok: true, job: { statusPath: '/tryon/jobs/abc123' } });
+  fake.onload?.();
+}
+
+async function sendJob(answers) {
+  const asked = fakePolls(answers);
+  FakeXhr.instances.length = 0;
+  FakeXhr.respond = accepted;
+  const stages = [];
+  const result = await requestTryOn(draft, { onStage: (stage) => stages.push(stage), pollIntervalMs: 1 });
+  return { result, stages, asked, xhr: FakeXhr.instances.at(-1) };
+}
+
+test('the app asks for a job, and polls it until the picture is made', async () => {
+  const { result, stages, asked, xhr } = await sendJob([
+    { body: { status: 'pending' } },
+    { body: { status: 'pending' } },
+    { body: { status: 'done', look: { imageUrl: 'https://onme.example.com/look/x', width: 768, height: 1024 } } },
+  ]);
+
+  assert.equal(xhr.headers.prefer, 'respond-async');
+  assert.equal(result.ok, true);
+  assert.equal(result.look.imageUrl, 'https://onme.example.com/look/x');
+  assert.deepEqual(stages.at(-1), { phase: 'making' });
+  assert.equal(asked.length, 3);
+  assert.equal(asked[0], 'https://onme.example.com/tryon/jobs/abc123?token=shared-token');
+});
+
+test('a job that fails says what the backend said', async () => {
+  const { result } = await sendJob([
+    { body: { status: 'pending' } },
+    { body: { status: 'failed', error: 'OnMe could not make that picture. Try again, or with a different photo.' } },
+  ]);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'OnMe could not make that picture. Try again, or with a different photo.');
+});
+
+test('a job the backend no longer has is a failure the user can retry', async () => {
+  const { result } = await sendJob([{ status: 404, body: { error: 'not found' } }]);
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /no longer on the server\. Try again/);
+});
+
+test('one dropped poll does not fail the try-on', async () => {
+  const { result } = await sendJob([
+    new TypeError('Network request failed'),
+    { body: { status: 'done', look: { imageUrl: 'https://onme.example.com/look/y' } } },
+  ]);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.look.imageUrl, 'https://onme.example.com/look/y');
 });
