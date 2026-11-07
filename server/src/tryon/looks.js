@@ -84,7 +84,13 @@ export function rememberLook({ bytes, contentType = 'image/png', width = 0, heig
   forgetExpiredLooks();
 
   const id = randomBytes(24).toString('hex');
-  entries.set(id, { bytes, contentType, width, height, expiresAt: Date.now() + config.ttlMs });
+  const entry = { bytes, contentType, width, height, expiresAt: Date.now() + config.ttlMs };
+  entries.set(id, entry);
+  // Deleted at expiry even if nothing touches the store again: an idle server
+  // must not keep a picture of a person longer than promised.
+  setTimeout(() => {
+    if (entries.get(id) === entry) entries.delete(id);
+  }, config.ttlMs).unref();
   enforceCaps(config);
   return id;
 }
