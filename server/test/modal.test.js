@@ -51,6 +51,14 @@ describe('Modal configuration', () => {
     withEnv({ ...full, MODAL_PROXY_SECRET: '' }, () => assert.equal(isModalConfigured(), false));
   });
 
+  test('the photos and the credential are never sent in the clear to another machine', () => {
+    const full = { MODAL_PROXY_KEY: 'k', MODAL_PROXY_SECRET: 's' };
+    withEnv({ ...full, ONME_MODAL_URL: 'http://x.modal.run' }, () => assert.equal(isModalConfigured(), false));
+    withEnv({ ...full, ONME_MODAL_URL: 'not a url' }, () => assert.equal(isModalConfigured(), false));
+    withEnv({ ...full, ONME_MODAL_URL: 'http://127.0.0.1:8000' }, () => assert.equal(isModalConfigured(), true));
+    withEnv({ ...full, ONME_MODAL_URL: 'http://localhost:8000' }, () => assert.equal(isModalConfigured(), true));
+  });
+
   test('the model is named for what actually runs', () => {
     assert.equal(getModalConfig().model, 'fashn-vton-1.5');
   });

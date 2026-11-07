@@ -39,10 +39,26 @@ export function getModalConfig() {
   };
 }
 
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+/**
+ * Whether a URL is fit to carry two photos of a person and the proxy credential:
+ * `https`, or plain `http` only to this machine.
+ */
+function isSafeUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK.has(url.hostname));
+}
+
 /** Whether a try-on can be sent to Modal at all. */
 export function isModalConfigured() {
   const config = getModalConfig();
-  return config.url !== '' && config.key !== '' && config.secret !== '';
+  return isSafeUrl(config.url) && config.key !== '' && config.secret !== '';
 }
 
 function describe(error) {
@@ -72,6 +88,8 @@ export async function runVirtualTryOn({ photos, fetchImpl, signal }) {
         outfit: { data: photos.outfit.data, mimeType: photos.outfit.mimeType },
       }),
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      // A redirect would carry the photos and the credential to another URL.
+      redirect: 'error',
     });
   } catch (error) {
     return { ok: false, error: `modal request failed: ${describe(error).slice(0, 200)}` };
