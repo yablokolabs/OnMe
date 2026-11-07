@@ -29,6 +29,8 @@ const TRY_ON_TIMEOUT_MS = 180_000;
  */
 const JOB_DEADLINE_MS = 10 * 60_000;
 const POLL_INTERVAL_MS = 3_000;
+/** A poll is a few bytes; one that takes longer than this has stalled. */
+const POLL_TIMEOUT_MS = 15_000;
 
 const JOB_GONE = 'That picture is no longer on the server. Try again.';
 const COULD_NOT_MAKE = 'OnMe could not make that picture. Try again.';
@@ -45,6 +47,8 @@ export interface TryOnOptions {
   onStage?: (stage: TryOnStage) => void;
   /** How long to wait between two questions about a job. */
   pollIntervalMs?: number;
+  /** How long one question about a job may take before it is asked again. */
+  pollTimeoutMs?: number;
 }
 
 /**
@@ -110,7 +114,11 @@ export function requestTryOn(draft: TryOnDraft, options: TryOnOptions = {}): Pro
           return;
         }
         startMaking();
-        void pollJob(jobUrl(endpoint.url, statusPath), options.pollIntervalMs ?? POLL_INTERVAL_MS).then(finish);
+        void pollJob(
+          jobUrl(endpoint.url, statusPath),
+          options.pollIntervalMs ?? POLL_INTERVAL_MS,
+          options.pollTimeoutMs ?? POLL_TIMEOUT_MS
+        ).then(finish);
         return;
       }
 
@@ -190,21 +198,27 @@ function wait(ms: number): Promise<void> {
  * Asks about a job until it has an answer. A dropped poll is not a failed
  * try-on: the picture is still being made, so the next poll simply asks again.
  */
-async function pollJob(url: string, intervalMs: number): Promise<TryOnResult> {
+async function pollJob(url: string, intervalMs: number, timeoutMs: number): Promise<TryOnResult> {
   const deadline = Date.now() + JOB_DEADLINE_MS;
 
   while (Date.now() < deadline) {
-    let response: Response;
+    // A stalled request is abandoned, and never outlives the job's deadline.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, deadline - Date.now()));
+    let status404 = false;
+    let payload: unknown = null;
     try {
-      response = await fetch(url);
+      const response = await fetch(url, { signal: controller.signal });
+      status404 = response.status === 404;
+      if (response.ok) payload = parseJson(await response.text());
     } catch {
-      await wait(intervalMs);
-      continue;
+      // Dropped or stalled: ask again.
+    } finally {
+      clearTimeout(timer);
     }
 
-    if (response.status === 404) return { ok: false, error: JOB_GONE };
+    if (status404) return { ok: false, error: JOB_GONE };
 
-    const payload = response.ok ? parseJson(await response.text().catch(() => '')) : null;
     const status = (payload as { status?: unknown } | null)?.status;
 
     if (status === 'done') {

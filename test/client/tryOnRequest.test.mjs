@@ -290,3 +290,29 @@ test('one dropped poll does not fail the try-on', async () => {
   assert.equal(result.ok, true);
   assert.equal(result.look.imageUrl, 'https://onme.example.com/look/y');
 });
+
+test('a poll that stalls is given up on, and the next one asks again', async () => {
+  const asked = [];
+  let call = 0;
+  globalThis.fetch = (url, init) => {
+    asked.push(String(url));
+    call += 1;
+    if (call === 1) {
+      // Never answers; only an abort ends it.
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify({ status: 'done', look: { imageUrl: 'https://onme.example.com/look/z' } }))
+    );
+  };
+  FakeXhr.instances.length = 0;
+  FakeXhr.respond = accepted;
+
+  const result = await requestTryOn(draft, { pollIntervalMs: 1, pollTimeoutMs: 20 });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.look.imageUrl, 'https://onme.example.com/look/z');
+  assert.equal(asked.length, 2);
+});
