@@ -60,9 +60,12 @@ cannot afford to do.
 - Both photos go to the OnMe backend, and the backend passes them to the try-on model to make the
   picture. That is the only thing either photo is ever used for.
 - **The backend writes nothing to disk.** The two photos live in memory for the length of one
-  request and are then dropped — no temp file, no cache, no log of the image data.
-- **The provider credential never reaches the app.** Either `FAL_KEY` or the Codex login on the
-  server, and never both in the same picture. The app sends photos to OnMe's own endpoint and
+  try-on and are then dropped — no temp file, no cache, no log of the image data. A try-on sent as
+  a job is answered with `202` at once and keeps the photos in memory until the model answers, not
+  only until that request ends; the job itself keeps only its outcome, for 10 minutes.
+- **The provider credential never reaches the app.** `FAL_KEY`, the Modal proxy token
+  (`MODAL_PROXY_KEY` and `MODAL_PROXY_SECRET`) or the Codex login, all on the server, and only one
+  of them makes any one picture. The app sends photos to OnMe's own endpoint and
   nothing else. When the subscription's access token is close to expiry the backend refreshes it
   against `auth.openai.com` and writes the new token back to the credential file it read — a token,
   never a photograph. `ONME_CODEX_REFRESH=off` stops even that.
@@ -71,6 +74,11 @@ cannot afford to do.
   the photo of you, every look, or all of it.
 
 ## What it charges for
+
+> **Before OnMe earns anything with the Modal provider:** FASHN VTON itself is Apache-2.0, but the
+> human parser it runs on every try-on inherits the NVIDIA Source Code License for SegFormer, which
+> allows non-commercial use only. Selling Pro or showing paying ads with this provider needs a
+> commercial license for that parser, or a parser under a license that allows it.
 
 50 try-ons per install are free. After that there are two ways to get one more picture, and both
 are already wired into the app:
