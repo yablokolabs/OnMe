@@ -43,16 +43,27 @@ export function createJob() {
   return id;
 }
 
+/**
+ * Ends a job and deletes it when its answer expires, whether or not anything
+ * asks again: an idle server must not keep a finished job longer than promised.
+ */
+function settle(id, job) {
+  if (!jobs.has(id)) return;
+  const entry = { ...job, expiresAt: Date.now() + DONE_TTL_MS };
+  jobs.set(id, entry);
+  setTimeout(() => {
+    if (jobs.get(id) === entry) jobs.delete(id);
+  }, DONE_TTL_MS).unref();
+}
+
 /** Records the look the job made. */
 export function finishJob(id, look) {
-  if (!jobs.has(id)) return;
-  jobs.set(id, { status: 'done', look, expiresAt: Date.now() + DONE_TTL_MS });
+  settle(id, { status: 'done', look });
 }
 
 /** Records the message the user sees for a job that made nothing. */
 export function failJob(id, error) {
-  if (!jobs.has(id)) return;
-  jobs.set(id, { status: 'failed', error, expiresAt: Date.now() + DONE_TTL_MS });
+  settle(id, { status: 'failed', error });
 }
 
 /** What the app is told about a job, or null when there is no such job. */
