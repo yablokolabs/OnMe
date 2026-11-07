@@ -64,7 +64,7 @@ describe('a try-on sent as a job', () => {
   let backend;
 
   before(async () => {
-    modal = await startFakeModal({ delayMs: 400 });
+    modal = await startFakeModal({ gated: true });
     backend = await startBackend(modalEnv(modal));
   });
 
@@ -79,9 +79,11 @@ describe('a try-on sent as a job', () => {
     const { job } = await response.json();
     assert.equal(typeof job.statusPath, 'string');
 
+    // The fake has not answered yet, so the job cannot have finished.
     const first = await poll(backend, job.statusPath);
     assert.equal(first.status, 200);
     assert.equal(first.body.status, 'pending');
+    modal.release();
 
     const done = await waitForJob(backend, job.statusPath);
     assert.equal(done.body.status, 'done');
@@ -156,5 +158,32 @@ describe('a job whose connection to the model breaks partway through the picture
     const failed = await waitForJob(backend, job.statusPath);
     assert.equal(failed.body.status, 'failed');
     assert.match(failed.body.error, /could not make that picture/);
+  });
+});
+
+describe('a job whose model answers with a redirect', () => {
+  let elsewhere;
+  let modal;
+  let backend;
+
+  before(async () => {
+    elsewhere = await startFakeModal();
+    modal = await startFakeModal({ redirectTo: `${elsewhere.base}/` });
+    backend = await startBackend(modalEnv(modal));
+  });
+
+  after(async () => {
+    await backend?.stop();
+    await modal?.close();
+    await elsewhere?.close();
+  });
+
+  test('fails, and the photos and the credential go nowhere else', async () => {
+    const response = await submit(backend);
+    const { job } = await response.json();
+
+    const failed = await waitForJob(backend, job.statusPath);
+    assert.equal(failed.body.status, 'failed');
+    assert.equal(elsewhere.requests.length, 0);
   });
 });

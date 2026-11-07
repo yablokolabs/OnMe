@@ -309,6 +309,9 @@ export async function startFakeCodex(options = {}) {
 export async function startFakeModal(options = {}) {
   const requests = [];
   const png = options.png ?? testPng(768, 1024);
+  // With `gated`, no request is answered until the test calls `release()`.
+  let release = () => {};
+  const gate = options.gated ? new Promise((resolve) => (release = resolve)) : Promise.resolve();
 
   const server = createServer((req, res) => {
     const chunks = [];
@@ -324,6 +327,11 @@ export async function startFakeModal(options = {}) {
       });
 
       const answer = () => {
+        if (options.redirectTo) {
+          res.writeHead(307, { location: options.redirectTo });
+          res.end();
+          return;
+        }
         const status = Number(options.status ?? 200);
         if (status !== 200) {
           res.writeHead(status, { 'content-type': 'application/json' });
@@ -339,8 +347,8 @@ export async function startFakeModal(options = {}) {
         }
         res.end(options.body ?? png);
       };
-      // A delay stands in for a cold start or a wait for a GPU.
-      setTimeout(answer, Number(options.delayMs ?? 0));
+      // A delay or a gate stands in for a cold start or a wait for a GPU.
+      void gate.then(() => setTimeout(answer, Number(options.delayMs ?? 0)));
     });
     req.on('error', () => {});
   });
@@ -351,6 +359,8 @@ export async function startFakeModal(options = {}) {
     base: `http://127.0.0.1:${server.address().port}`,
     requests,
     png,
+    /** Lets a gated fake answer. */
+    release: () => release(),
     /** The parsed body of the last request, or null. */
     lastInput: () => {
       const last = requests.at(-1);
@@ -362,6 +372,8 @@ export async function startFakeModal(options = {}) {
       }
     },
     close: async () => {
+      release();
+      server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     },
   };
