@@ -48,7 +48,7 @@ image = (
     )
     .env({"HF_HOME": HF_HOME})
     .run_function(download_weights)
-    .add_local_python_source("garment")
+    .add_local_python_source("garment", "photo_size")
 )
 
 app = modal.App("onme-tryon")
@@ -73,9 +73,21 @@ class TryOn:
 
         if not isinstance(photo, dict) or not isinstance(photo.get("data"), str):
             raise HTTPException(status_code=400, detail=f"{name} photo is missing")
+        from photo_size import too_large
+
         try:
             raw = base64.b64decode(photo["data"], validate=False)
-            return ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+            image = Image.open(io.BytesIO(raw))
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{name} photo is not an image")
+
+        # Opening reads only the header; refuse before the pixels are decoded.
+        width, height = image.size
+        if too_large(width, height):
+            raise HTTPException(status_code=413, detail=f"{name} photo is {width}x{height}, too large")
+
+        try:
+            return ImageOps.exif_transpose(image).convert("RGB")
         except Exception:
             raise HTTPException(status_code=400, detail=f"{name} photo is not an image")
 
