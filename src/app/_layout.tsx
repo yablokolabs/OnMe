@@ -25,7 +25,6 @@ export default function RootLayout() {
           <Stack.Screen name="tryon" />
           <Stack.Screen name="look" />
           <Stack.Screen name="settings" />
-          <Stack.Screen name="paywall" />
         </Stack>
       </LooksProvider>
     </PlanProvider>

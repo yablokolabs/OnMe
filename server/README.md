@@ -22,7 +22,22 @@ content-type: application/json
    415 not JSON, or a photo format the model cannot take
    429 rate limited
    502 the provider failed, or the model refused to draw it
-   503 no try-on model configured on this boot
+   503 no try-on model configured on this boot, or this month's pictures are spent
+       ("Try again on 1 <next month>"); both are decided before the photos are read
+
+GET /tryon/budget
+   200 { "available": true, "resetsOn": "2026-12-01" }
+       asked by the app before it offers an ad, so no ad buys a picture that will be refused
+
+POST /report
+   { "reason": "offensive" | "sexual" | "not-me" | "other", "model": "…", "note": "…" }
+   202 { "ok": true }   the reason, the model and the first 200 characters of the note go to
+                        the log; no picture is ever sent
+   400 a reason not on the list, or not JSON
+   413 over 4 KB
+
+GET /privacy
+   200 the privacy policy the Google Play listing links to, as text/html
 
 GET /tryon/jobs/<id>
    200 { "status": "pending" }
@@ -42,7 +57,8 @@ GET /
 ```
 
 `GET /health` returns booleans, names and numbers only: whether it can generate, which model, the
-limits, how many try-ons are in flight. It never returns key material — a test asserts that.
+limits, how many try-ons are in flight, the month's count (`monthlyTryOns`) and how many reports
+came in. It never returns key material — a test asserts that.
 
 Photos travel as base64 inside one JSON body rather than as multipart: the body stays a single
 contiguous stream the phone can report upload progress for, and the server needs no multipart
@@ -72,6 +88,8 @@ parser. The cost is base64's 4/3 inflation and both images in memory for one req
 | `src/index.js` | the whole API: routing, the checks in the order above, `readBody` (which drains an oversized request rather than destroying the socket), the abort on `res.on('close')`, and `/health` |
 | `src/env.js` | where configuration comes from: `ONME_ENV_FILE` alone when set, otherwise `server/.env` > repository-root `.env`, with a real environment variable always winning |
 | `src/limits.js` | the ceilings: 12 MB per photo, 40 MB per request, 6 try-ons a minute, 2 at once |
+| `src/budget.js` | the monthly ceiling: pictures per calendar month (UTC), counted in memory, `ONME_MONTHLY_TRYON_LIMIT` (default 600) |
+| `src/privacy.js` | the privacy policy page, next to the code it describes |
 | `src/tryon/photos.js` | pure byte-signature sniffing (PNG/JPEG/WebP/HEIC), base64 validation, the required consent assertion |
 | `src/tryon/fal.js` | the hand-rolled fal queue client: `POST` the model, poll `status_url`, `GET response_url` |
 | `src/tryon/codex.js` | the subscription client: reads the Codex login, refreshes its token when it is close to expiry, posts both photos to the Codex event stream and reads the picture out of it |

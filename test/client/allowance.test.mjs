@@ -1,9 +1,9 @@
 /**
  * The free allowance, and the two ways one more picture can be had.
  *
- * This is the arithmetic the try-on gate, the paywall and Settings all read, so it
- * is pinned here without a device, a database or a store: fifty pictures for nothing,
- * an ad buys exactly one, Pro is unlimited, and counters that have gone strange can
+ * This is the arithmetic the try-on gate and Settings all read, so it
+ * is pinned here without a device, a database or a store: ten pictures for nothing,
+ * an ad buys exactly one, and counters that have gone strange can
  * never take away a picture someone never made.
  */
 
@@ -19,38 +19,34 @@ import {
 } from '../../src/services/allowance.ts';
 import { parseAllowance } from '../../src/services/lookRows.ts';
 
-test('every install gets fifty free pictures', () => {
-  assert.equal(FREE_TRY_ONS, 50);
+test('every install gets ten free pictures', () => {
+  assert.equal(FREE_TRY_ONS, 10);
 });
 
 test('a new install has every free picture', () => {
   assert.equal(remainingFree({ used: 0, bonus: 0 }), FREE_TRY_ONS);
-  assert.equal(mayMakeAnother({ used: 0, bonus: 0 }, false), true);
+  assert.equal(mayMakeAnother({ used: 0, bonus: 0 }), true);
 });
 
 test('the last free picture is allowed and the next one is not', () => {
   const nearly = { used: FREE_TRY_ONS - 1, bonus: 0 };
 
-  assert.equal(mayMakeAnother(nearly, false), true);
+  assert.equal(mayMakeAnother(nearly), true);
   assert.equal(remainingFree(afterTryOn(nearly)), 0);
-  assert.equal(mayMakeAnother(afterTryOn(nearly), false), false);
-});
-
-test('Pro makes the count irrelevant', () => {
-  assert.equal(mayMakeAnother({ used: FREE_TRY_ONS * 3, bonus: 0 }, true), true);
+  assert.equal(mayMakeAnother(afterTryOn(nearly)), false);
 });
 
 test('an ad buys exactly one more picture', () => {
   const spent = { used: FREE_TRY_ONS, bonus: 0 };
 
-  assert.equal(mayMakeAnother(spent, false), false);
+  assert.equal(mayMakeAnother(spent), false);
 
   const rewarded = afterReward(spent);
   assert.equal(remainingFree(rewarded), 1);
-  assert.equal(mayMakeAnother(rewarded, false), true);
+  assert.equal(mayMakeAnother(rewarded), true);
 
   // And it is spent like any other picture: one ad is one picture.
-  assert.equal(mayMakeAnother(afterTryOn(rewarded), false), false);
+  assert.equal(mayMakeAnother(afterTryOn(rewarded)), false);
 });
 
 test('counters that have gone strange cannot take pictures away', () => {

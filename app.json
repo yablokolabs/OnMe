@@ -53,7 +53,7 @@
           "iosAppId": "ca-app-pub-3940256099942544~1458002511"
         }
       ],
-      "./plugins/with-test-store-android"
+      "./plugins/with-onme-android"
     ],
     "experiments": {
       "typedRoutes": true,

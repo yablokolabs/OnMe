@@ -437,6 +437,14 @@ export async function startBackend(extraEnv = {}) {
     port,
     base,
     logs: () => logs.join(''),
+    /** Resolves with the log once it matches: the child's output arrives after its answers. */
+    waitForLog: async (pattern, timeoutMs = 2000) => {
+      const until = Date.now() + timeoutMs;
+      while (!pattern.test(logs.join('')) && Date.now() < until) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return logs.join('');
+    },
     exited: () => exitCode,
     health: async () => (await fetch(`${base}/health`)).json(),
     /** POSTs a try-on request with the given body. */

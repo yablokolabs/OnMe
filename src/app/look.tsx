@@ -14,8 +14,10 @@ import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { PrimaryButton } from '@/components/PrimaryButton';
 import { Screen } from '@/components/Screen';
+import { Section } from '@/components/Section';
 import { Palette, PortraitRatio, Radii, Spacing } from '@/constants/theme';
 import { useLooks } from '@/hooks/use-looks';
+import { reportPicture, type ReportReason } from '@/services/backendCalls';
 import { shareImage } from '@/services/sharing';
 import { formatMoment } from '@/utils/format';
 
@@ -24,6 +26,10 @@ export default function LookScreen() {
   const params = useLocalSearchParams<{ id?: string }>();
   const { find, remove, loading } = useLooks();
   const [sharing, setSharing] = useState(false);
+  /** The report panel: closed, open, sending, or the sentence that answers it. */
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reporting, setReporting] = useState(false);
+  const [reportNote, setReportNote] = useState<string | null>(null);
 
   const id = typeof params.id === 'string' ? params.id : '';
   const look = id === '' ? undefined : find(id);
@@ -37,6 +43,21 @@ export default function LookScreen() {
       setSharing(false);
     }
   }, [look]);
+
+  const sendReport = useCallback(
+    async (reason: ReportReason) => {
+      if (!look) return;
+      setReporting(true);
+      try {
+        const outcome = await reportPicture({ reason, model: look.model });
+        setReportNote(outcome.ok ? 'Thank you. The report was sent to Yabloko Labs.' : outcome.error);
+        if (outcome.ok) setReportOpen(false);
+      } finally {
+        setReporting(false);
+      }
+    },
+    [look]
+  );
 
   const confirmDelete = useCallback(() => {
     if (!look || !id) return;
@@ -125,6 +146,40 @@ export default function LookScreen() {
             />
           </View>
 
+          {/* Google Play asks every app that generates images for a way to report one. */}
+          {reportOpen ? (
+            <Section title="Report this picture" hint="The report sends the reason and the model's name. It sends no photo.">
+              {REPORT_REASONS.map((entry) => (
+                <PrimaryButton
+                  key={entry.reason}
+                  label={entry.label}
+                  variant="secondary"
+                  onPress={() => void sendReport(entry.reason)}
+                  disabled={reporting}
+                  testID={`report-${entry.reason}`}
+                />
+              ))}
+              <PrimaryButton
+                label="Cancel"
+                variant="secondary"
+                onPress={() => setReportOpen(false)}
+                disabled={reporting}
+              />
+            </Section>
+          ) : (
+            <Pressable
+              onPress={() => {
+                setReportNote(null);
+                setReportOpen(true);
+              }}
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.reportLink, pressed && styles.pressed]}
+              testID="report-look">
+              <Text style={styles.reportLabel}>Report this picture</Text>
+            </Pressable>
+          )}
+          {reportNote ? <Text style={styles.reportNote}>{reportNote}</Text> : null}
+
           {look.person || look.outfit ? (
             <View style={styles.sources}>
               <Text style={styles.sourcesLabel}>MADE FROM</Text>
@@ -149,6 +204,13 @@ export default function LookScreen() {
     </Screen>
   );
 }
+
+const REPORT_REASONS: { reason: ReportReason; label: string }[] = [
+  { reason: 'offensive', label: 'It is offensive' },
+  { reason: 'sexual', label: 'It is sexual' },
+  { reason: 'not-me', label: 'It is not me, or uses a photo without consent' },
+  { reason: 'other', label: 'Something else is wrong' },
+];
 
 function Header({ onBack }: { onBack: () => void }) {
   return (
@@ -184,6 +246,21 @@ const styles = StyleSheet.create({
   },
   content: {
     gap: Spacing.three,
+  },
+  reportLink: {
+    alignSelf: 'center',
+    paddingVertical: Spacing.two,
+  },
+  reportLabel: {
+    fontSize: 13,
+    color: Palette.textFaint,
+    textDecorationLine: 'underline',
+  },
+  reportNote: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: Palette.textSecondary,
+    textAlign: 'center',
   },
   result: {
     width: '100%',

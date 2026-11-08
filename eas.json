@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/expo/expo/main/packages/eas-cli/schema/eas.schema.json",
   "cli": {
     "version": ">= 16.0.0",
-    "appVersionSource": "local"
+    "appVersionSource": "remote"
   },
   "build": {
     "development": {
@@ -26,7 +26,9 @@
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_ONME_BACKEND_URL": "https://onme.yablokolabs.com"
+        "EXPO_PUBLIC_ONME_BACKEND_URL": "https://onme.yablokolabs.com",
+        "ONME_ADMOB_ANDROID_APP_ID": "",
+        "EXPO_PUBLIC_ADMOB_REWARDED_UNIT": ""
       },
       "android": {
         "buildType": "app-bundle"
@@ -34,6 +36,11 @@
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "android": {
+        "track": "internal",
+        "releaseStatus": "draft"
+      }
+    }
   }
 }
