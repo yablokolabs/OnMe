@@ -56,7 +56,9 @@ app = modal.App("onme-tryon")
 
 # A list is a fallback order: Modal takes the first GPU it has free, so a
 # shortage of one type does not leave a try-on waiting minutes to start.
-@app.cls(image=image, gpu=["L4", "A10G", "L40S"], scaledown_window=300, timeout=600)
+# The GPU is paid from a fixed monthly allowance, and an idle GPU is billed like a
+# busy one, so it stops one minute after the last picture.
+@app.cls(image=image, gpu=["L4", "A10G", "L40S"], scaledown_window=60, timeout=600)
 class TryOn:
     @modal.enter()
     def load(self):
