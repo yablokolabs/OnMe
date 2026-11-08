@@ -39,6 +39,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 
 import { getCodexConfig, isCodexConfigured, runVirtualTryOn as runVirtualTryOnWithCodex } from './tryon/codex.js';
+import { createMonthlyBudget } from './budget.js';
 import { loadServerEnv } from './env.js';
 import { LIMITS, describeLimits } from './limits.js';
 import { getFalConfig, isFalConfigured, runVirtualTryOn as runVirtualTryOnWithFal } from './tryon/fal.js';
@@ -46,6 +47,7 @@ import { describeLookStore, getLook, rememberLook } from './tryon/looks.js';
 import { getModalConfig, isModalConfigured, runVirtualTryOn as runVirtualTryOnWithModal } from './tryon/modal.js';
 import { createJob, describeJob, failJob, finishJob } from './tryon/jobs.js';
 import { describeBytes, normalizeConsent, normalizePhotos } from './tryon/photos.js';
+import { PRIVACY_HTML } from './privacy.js';
 
 loadServerEnv();
 
@@ -73,6 +75,35 @@ const DOWNLOAD_URL = (process.env.ONME_DOWNLOAD_URL ?? 'https://onme-dl.yablokol
 const LOOK_PATH_PREFIX = '/look/';
 /** Where the app asks after a try-on it sent as a job. */
 const JOBS_PATH_PREFIX = '/tryon/jobs/';
+/** Where the app asks whether there are pictures left this month. */
+const BUDGET_PATH = '/tryon/budget';
+/** Where the app reports a picture. Google Play asks this of apps that generate images. */
+const REPORT_PATH = '/report';
+/** The privacy policy the store listing links to. */
+const PRIVACY_PATH = '/privacy';
+/** The reasons a picture can be reported for. Anything else is refused. */
+const REPORT_REASONS = new Set(['offensive', 'sexual', 'not-me', 'other']);
+/** A report is a reason and a short note: nothing near this size. */
+const MAX_REPORT_BYTES = 4096;
+/** How much of a report's note reaches the log. */
+const MAX_REPORT_NOTE = 200;
+
+/**
+ * Pictures this backend makes in one month. The GPU is paid from a fixed
+ * monthly allowance, and this is the share of it the app may spend.
+ */
+const monthlyBudget = createMonthlyBudget({ limit: readMonthlyLimit() });
+
+function readMonthlyLimit() {
+  const raw = Number(process.env.ONME_MONTHLY_TRYON_LIMIT);
+  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : 600;
+}
+
+/** "1 December", for the sentence the app shows when the month is spent. */
+function describeResetDay(resetsOn) {
+  const month = new Date(`${resetsOn}T00:00:00Z`).toLocaleString('en-GB', { month: 'long', timeZone: 'UTC' });
+  return `1 ${month}`;
+}
 
 /** Try-ons currently generating, for the concurrency cap. */
 let activeTryOns = 0;
@@ -86,6 +117,8 @@ const counters = {
   tryOnsTooLarge: 0,
   tryOnsUnavailable: 0,
   tryOnsFailed: 0,
+  tryOnsOverMonthlyLimit: 0,
+  reports: 0,
 };
 
 /**
@@ -342,6 +375,17 @@ async function handleTryOnRequest(req, res, url) {
     return;
   }
 
+  // Checked before a byte is read, like the model: a month with no pictures
+  // left has no use for the photos.
+  const budget = monthlyBudget.describe();
+  if (!budget.available) {
+    counters.tryOnsOverMonthlyLimit += 1;
+    sendJson(res, 503, {
+      error: `OnMe has made all its free pictures for this month. Try again on ${describeResetDay(budget.resetsOn)}.`,
+    });
+    return;
+  }
+
   const contentType = String(req.headers['content-type'] ?? '').toLowerCase();
   if (!contentType.includes('application/json')) {
     counters.tryOnsRejected += 1;
@@ -433,6 +477,18 @@ async function handleTryOnRequest(req, res, url) {
       return;
     }
 
+    // Counted here, once the photos are known to go to the model. Two requests
+    // can pass the check above together, so the count is taken again.
+    if (!monthlyBudget.take()) {
+      counters.tryOnsOverMonthlyLimit += 1;
+      sendJson(res, 503, {
+        error: `OnMe has made all its free pictures for this month. Try again on ${describeResetDay(
+          monthlyBudget.describe().resetsOn
+        )}.`,
+      });
+      return;
+    }
+
     const { person, outfit } = validated.photos;
     const origin = requestOrigin(req);
 
@@ -482,6 +538,50 @@ async function handleTryOnRequest(req, res, url) {
   }
 }
 
+/**
+ * POST /report — a user reports a picture.
+ *
+ * The report carries a reason from a fixed list, the model's name and an
+ * optional note, and never a picture: the picture is on the phone and stays
+ * there. It is written to the log, which is where a person reads it.
+ */
+async function handleReport(req, res) {
+  if (req.method !== 'POST') {
+    sendJson(res, 405, { error: 'Use POST to report a picture.' });
+    return;
+  }
+
+  // A declared length over the cap is refused before reading, as for a try-on.
+  if (Number(req.headers['content-length']) > MAX_REPORT_BYTES) {
+    res.setHeader('connection', 'close');
+    sendJson(res, 413, { error: 'That report could not be read.' });
+    return;
+  }
+
+  const body = await readBody(req, MAX_REPORT_BYTES);
+  if (!body.ok) {
+    if (body.reason === 'too-large') res.setHeader('connection', 'close');
+    sendJson(res, body.reason === 'too-large' ? 413 : 400, { error: 'That report could not be read.' });
+    return;
+  }
+
+  const parsed = readJsonBody(body.bytes);
+  const reason = typeof parsed?.reason === 'string' ? parsed.reason : '';
+  if (!REPORT_REASONS.has(reason)) {
+    sendJson(res, 400, { error: 'That report could not be read.' });
+    return;
+  }
+
+  const clean = (value, max) =>
+    (typeof value === 'string' ? value : '').replace(/[\u0000-\u001f\u007f"\\]+/g, ' ').trim().slice(0, max);
+  const model = clean(parsed.model, 64) || 'unknown';
+  const note = clean(parsed.note, MAX_REPORT_NOTE);
+
+  counters.reports += 1;
+  console.log(`[onme] report: reason=${reason} model=${model} note="${note}"`);
+  sendJson(res, 202, { ok: true });
+}
+
 function handleRequest(req, res) {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
@@ -500,6 +600,30 @@ function handleRequest(req, res) {
       return;
     }
     sendJson(res, 200, job);
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === BUDGET_PATH) {
+    const { available, resetsOn } = monthlyBudget.describe();
+    sendJson(res, 200, { available, resetsOn });
+    return;
+  }
+
+  if (url.pathname === REPORT_PATH) {
+    void handleReport(req, res).catch(() => {
+      counters.handlerErrors += 1;
+      if (!res.headersSent) sendJson(res, 500, { error: 'That report could not be read.' });
+    });
+    return;
+  }
+
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === PRIVACY_PATH) {
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'content-length': Buffer.byteLength(PRIVACY_HTML),
+      'cache-control': 'public, max-age=3600',
+    });
+    res.end(req.method === 'HEAD' ? undefined : PRIVACY_HTML);
     return;
   }
 
@@ -528,6 +652,8 @@ function handleRequest(req, res) {
       aspectRatio: summary.aspectRatio,
       // Pictures waiting to be collected by a phone: numbers only.
       looks: describeLookStore(),
+      // The month's pictures: numbers and a date only.
+      monthlyTryOns: monthlyBudget.describe(),
       tokenRequired: CLIENT_TOKEN.length > 0,
       activeTryOns,
       ...counters,
