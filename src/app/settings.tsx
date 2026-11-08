@@ -8,8 +8,8 @@
  */
 
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { PrimaryButton } from '@/components/PrimaryButton';
 import { Screen } from '@/components/Screen';
@@ -17,7 +17,9 @@ import { Section } from '@/components/Section';
 import { Palette, Radii, Spacing } from '@/constants/theme';
 import { useLooks } from '@/hooks/use-looks';
 import { usePlan } from '@/hooks/use-plan';
+import { privacyChoicesRequired, showPrivacyChoices } from '@/services/ads';
 import { FREE_TRY_ONS } from '@/services/allowance';
+import { ONME_BACKEND_URL } from '@/services/backend';
 
 /**
  * What actually happens to the photos, in full.
@@ -29,14 +31,28 @@ import { FREE_TRY_ONS } from '@/services/allowance';
 const PRIVACY_NOTE =
   "When you try something on, the two photos are sent to OnMe's backend and on to the try-on " +
   'model so the picture can be made. Nothing is written to disk on the server: the photos are ' +
-  'held for the length of one request and then dropped. The generated picture is downloaded to ' +
-  'this phone, which is why your looks keep working with no connection.';
+  'held while the picture is made and then dropped. The generated picture is downloaded to ' +
+  'this phone, which is why your looks keep working with no connection. OnMe is for adults aged 18 and over.';
+
+/** The privacy policy the store listing links to, served by the backend. */
+const PRIVACY_POLICY_URL = `${ONME_BACKEND_URL}/privacy`;
 
 export default function SettingsScreen() {
   const router = useRouter();
   const { looks, person, forgetPerson, clearAll, removeEverything } = useLooks();
-  const { pro, remaining } = usePlan();
+  const { remaining } = usePlan();
   const [busy, setBusy] = useState(false);
+  const [adChoices, setAdChoices] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    void privacyChoicesRequired().then((required) => {
+      if (mounted) setAdChoices(required);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const confirmForgetPerson = useCallback(() => {
     Alert.alert(
@@ -177,27 +193,23 @@ export default function SettingsScreen() {
         )}
       </Section>
 
-      {/*
-        * The plan, stated as a fact and nothing more.
-        *
-        * Settings is where a person checks what they own; the selling happens on the
-        * paywall, so this card says what is true and puts one way in to the screen
-        * that can change it.
-        */}
       <Section
-        title="OnMe Pro"
-        hint={
-          pro
-            ? 'Unlimited try-ons. The receipt is kept by the app store account this phone is signed in to, not by OnMe.'
-            : `${remaining === 1 ? 'One picture' : `${remaining} pictures`} left of the ${FREE_TRY_ONS} that are free. Pro removes the count.`
-        }
-        tone={pro ? 'accent' : 'plain'}>
+        title="Free pictures"
+        hint={`${remaining === 1 ? 'One picture' : `${remaining} pictures`} left of the ${FREE_TRY_ONS} that are free. After that, a short video buys one more.`}>
+        {adChoices ? (
+          <PrimaryButton
+            label="Privacy choices for ads"
+            variant="secondary"
+            onPress={() => void showPrivacyChoices()}
+            disabled={busy}
+            testID="ad-privacy-choices"
+          />
+        ) : null}
         <PrimaryButton
-          label={pro ? 'About Pro' : 'See OnMe Pro'}
+          label="Privacy policy"
           variant="secondary"
-          onPress={() => router.push('/paywall')}
-          disabled={busy}
-          testID="open-paywall"
+          onPress={() => void Linking.openURL(PRIVACY_POLICY_URL)}
+          testID="privacy-policy"
         />
       </Section>
 

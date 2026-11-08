@@ -3,63 +3,77 @@
  *
  * It is placed where it can be wanted instead of endured. The only moment an ad
  * exists in this app is the moment the free pictures have run out and the user has
- * chosen to watch one rather than pay — nothing plays on its own, nothing covers
- * the picture they just made, and the reward is the product's own currency (one
- * more try-on) rather than coins in an invented economy.
+ * chosen to watch one: nothing plays on its own, nothing covers the picture they
+ * just made, and the reward is one more try-on.
  *
- * Every event the ad network reports is reported on to RevenueCat's ad tracker as
- * well, so ad revenue and purchase revenue are accounted for in the same place.
- * That is the whole of "RevenueCat Ads": not a different way to serve an ad, a
- * careful way to count one. This is the manual integration from its docs, which is
- * the supported path for any network without an adapter module.
+ * Consent comes first. In the UK, the EU and Switzerland the law asks for it before
+ * an ad is requested, so Google's User Messaging Platform shows the consent message
+ * configured in AdMob (Privacy & messaging) before the SDK starts, and the user can
+ * change the choice later from Settings.
  *
- * The unit id is Google's own test unit until a real AdMob unit id replaces it:
- * test ads are really served and really reported, they simply earn nothing.
+ * The unit id is `EXPO_PUBLIC_ADMOB_REWARDED_UNIT`. A build without one uses
+ * Google's own test unit: test ads are really served, they earn nothing.
  */
 
 import mobileAds, {
   AdEventType,
-  RevenuePrecisions,
+  AdsConsent,
+  AdsConsentPrivacyOptionsRequirementStatus,
   RewardedAd,
   RewardedAdEventType,
   TestIds,
 } from 'react-native-google-mobile-ads';
-import Purchases, { AdFormat, AdMediatorName, AdRevenuePrecision } from 'react-native-purchases';
 
-import { purchasesReady } from '@/services/purchases';
-import { createId } from '@/utils/ids';
+const CONFIGURED_UNIT = (process.env.EXPO_PUBLIC_ADMOB_REWARDED_UNIT ?? '').trim();
 
-/** Google's test rewarded unit. Swap in the AdMob unit id when there is one. */
-export const REWARDED_AD_UNIT = TestIds.REWARDED;
+/** The AdMob rewarded unit, or Google's test unit in a build that names none. */
+export const REWARDED_AD_UNIT = CONFIGURED_UNIT !== '' ? CONFIGURED_UNIT : TestIds.REWARDED;
 
-/** Where the ad appears. RevenueCat groups its charts by this name. */
-const PLACEMENT = 'tryon_extra_picture';
-
-/** Google numbers its revenue precisions; RevenueCat names them. */
-const PRECISION: Record<number, AdRevenuePrecision> = {
-  [RevenuePrecisions.UNKNOWN]: AdRevenuePrecision.unknown,
-  [RevenuePrecisions.ESTIMATED]: AdRevenuePrecision.estimated,
-  [RevenuePrecisions.PUBLISHER_PROVIDED]: AdRevenuePrecision.publisherDefined,
-  [RevenuePrecisions.PRECISE]: AdRevenuePrecision.exact,
-};
-
-let initialised: Promise<void> | null = null;
+let initialised: Promise<boolean> | null = null;
 
 /**
- * Brings the ad SDK up, once.
+ * Asks for consent where the law needs it, then brings the ad SDK up, once.
+ * Resolves true when ads may be requested.
  *
  * Never rejects: an ad network that cannot be reached must not be a reason the app
  * fails to start, and the only thing that depends on it is the optional extra
  * picture.
  */
-export function startAds(): Promise<void> {
+export function startAds(): Promise<boolean> {
   if (!initialised) {
-    initialised = mobileAds()
-      .initialize()
-      .then(() => undefined)
-      .catch(() => undefined);
+    initialised = (async () => {
+      let canRequest = false;
+      try {
+        canRequest = (await AdsConsent.gatherConsent()).canRequestAds;
+      } catch {
+        // A failed consent update still leaves the consent from an earlier start.
+        canRequest = (await AdsConsent.getConsentInfo().catch(() => null))?.canRequestAds ?? false;
+      }
+      if (!canRequest) return false;
+      await mobileAds().initialize();
+      return true;
+    })().catch(() => false);
   }
   return initialised;
+}
+
+/** Whether Settings has to offer a way to change the consent choice. */
+export async function privacyChoicesRequired(): Promise<boolean> {
+  try {
+    const info = await AdsConsent.getConsentInfo();
+    return info.privacyOptionsRequirementStatus === AdsConsentPrivacyOptionsRequirementStatus.REQUIRED;
+  } catch {
+    return false;
+  }
+}
+
+/** Shows Google's form to change the consent choice. */
+export async function showPrivacyChoices(): Promise<void> {
+  try {
+    await AdsConsent.showPrivacyOptionsForm();
+  } catch {
+    // Nothing to tell the user: the form closes and the choice stays as it was.
+  }
 }
 
 export interface RewardOutcome {
@@ -70,43 +84,20 @@ export interface RewardOutcome {
 }
 
 /**
- * Quietly reports one ad event to RevenueCat.
- *
- * Bookkeeping never gets in the way of the reward: a report that fails still
- * leaves a user who watched the video with their extra picture, and there is
- * nothing useful to say to them about the failure.
- */
-function track(run: () => Promise<void>): void {
-  if (!purchasesReady) return;
-  void run().catch(() => {});
-}
-
-function describeError(error: unknown): number | null {
-  const code = Number((error as { code?: unknown } | null)?.code);
-  return Number.isFinite(code) ? code : null;
-}
-
-/**
  * Shows a rewarded video and reports whether the user earned it.
  *
  * Resolves on the ad's own events rather than on a timer: closing the video early
- * is a normal outcome with `earned: false`, and no message is worth showing for
- * it, since the user knows what they did.
+ * is a normal outcome with `earned: false`.
  */
 export async function showRewardedForOneMorePicture(): Promise<RewardOutcome> {
-  await startAds();
+  if (!(await startAds())) {
+    return {
+      earned: false,
+      message: 'Ads are off because of your privacy choice. You can change it in Settings.',
+    };
+  }
 
-  // One id for the whole ad, so the load, the impression, the click and the money
-  // join up into a single story in RevenueCat. The network's own impression id
-  // would be better still, and is what RevenueCat's adapter modules pass on.
-  const impressionId = createId('ad');
   const ad = RewardedAd.createForAdRequest(REWARDED_AD_UNIT);
-  const common = {
-    mediatorName: AdMediatorName.adMob,
-    adFormat: AdFormat.rewarded,
-    adUnitId: REWARDED_AD_UNIT,
-    placement: PLACEMENT,
-  };
 
   return new Promise<RewardOutcome>((resolve) => {
     let earned = false;
@@ -122,45 +113,13 @@ export async function showRewardedForOneMorePicture(): Promise<RewardOutcome> {
 
     unsubscribe.push(
       ad.addAdEventListener(RewardedAdEventType.LOADED, () => {
-        track(() => Purchases.adTracker.trackAdLoaded({ ...common, impressionId }));
-        ad.show().catch(() =>
-          finish({ earned: false, message: 'The video could not start. Try again.' })
-        );
+        ad.show().catch(() => finish({ earned: false, message: 'The video could not start. Try again.' }));
       })
     );
 
     unsubscribe.push(
       ad.addAdEventListener(RewardedAdEventType.EARNED_REWARD, () => {
         earned = true;
-      })
-    );
-
-    unsubscribe.push(
-      ad.addAdEventListener(AdEventType.IMPRESSION, () => {
-        track(() => Purchases.adTracker.trackAdDisplayed({ ...common, impressionId }));
-      })
-    );
-
-    unsubscribe.push(
-      ad.addAdEventListener(AdEventType.CLICKED, () => {
-        track(() => Purchases.adTracker.trackAdOpened({ ...common, impressionId }));
-      })
-    );
-
-    unsubscribe.push(
-      ad.addAdEventListener(AdEventType.PAID, (paid) => {
-        const micros = paid.valueMicros
-          ? Number(paid.valueMicros)
-          : Math.round(paid.value * 1_000_000);
-        track(() =>
-          Purchases.adTracker.trackAdRevenue({
-            ...common,
-            impressionId,
-            revenueMicros: Number.isFinite(micros) ? micros : 0,
-            currency: paid.currency,
-            precision: PRECISION[paid.precision] ?? AdRevenuePrecision.unknown,
-          })
-        );
       })
     );
 
@@ -175,13 +134,7 @@ export async function showRewardedForOneMorePicture(): Promise<RewardOutcome> {
     );
 
     unsubscribe.push(
-      ad.addAdEventListener(AdEventType.ERROR, (error) => {
-        track(() =>
-          Purchases.adTracker.trackAdFailedToLoad({
-            ...common,
-            mediatorErrorCode: describeError(error),
-          })
-        );
+      ad.addAdEventListener(AdEventType.ERROR, () => {
         finish({ earned: false, message: 'No video was available just now. Try again in a moment.' });
       })
     );

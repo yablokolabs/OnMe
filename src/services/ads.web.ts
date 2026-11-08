@@ -19,7 +19,15 @@ export interface RewardOutcome {
   message?: string;
 }
 
-export function startAds(): Promise<void> {
+export function startAds(): Promise<boolean> {
+  return Promise.resolve(false);
+}
+
+export function privacyChoicesRequired(): Promise<boolean> {
+  return Promise.resolve(false);
+}
+
+export function showPrivacyChoices(): Promise<void> {
   return Promise.resolve();
 }
 

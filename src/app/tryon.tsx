@@ -55,8 +55,8 @@ export default function TryOnScreen() {
   const { person: savedPerson, remember, add } = useLooks();
   const { allowed, noteTryOn, watchAd } = usePlan();
 
-  /** The gate's own actions, kept apart from the try-on's so neither can wedge the other. */
-  const [gate, setGate] = useState<'ad' | 'buy' | null>(null);
+  /** The gate's own action, kept apart from the try-on's so neither can wedge the other. */
+  const [gate, setGate] = useState<'ad' | null>(null);
   const [gateMessage, setGateMessage] = useState<string | null>(null);
 
   const [personPicked, setPersonPicked] = useState<PickedPhoto | null>(null);
@@ -250,7 +250,7 @@ export default function TryOnScreen() {
           ) : null}
 
           {/*
-            * The gate, in the same words the paywall uses.
+            * The gate.
             *
             * It is here rather than in front of the app because the two photos are
             * already chosen by this point: the picture is one tap away, so this is
@@ -259,25 +259,16 @@ export default function TryOnScreen() {
           {blocked || gateMessage ? (
             <Section
               title="Out of free pictures"
-              hint={`${FREE_TRY_ONS} try-ons are included. Pro is unlimited, or a short video buys one more picture.`}
+              hint={`${FREE_TRY_ONS} try-ons are free. A short video buys one more picture.`}
               tone="warning">
               {allowed ? null : (
-                <>
-                  <PrimaryButton
-                    label="Watch a video for one more picture"
-                    variant="secondary"
-                    onPress={onWatchAd}
-                    loading={gate === 'ad'}
-                    disabled={gate !== null}
-                    testID="gate-ad"
-                  />
-                  <PrimaryButton
-                    label="See OnMe Pro"
-                    onPress={() => router.push('/paywall')}
-                    disabled={gate !== null}
-                    testID="gate-paywall"
-                  />
-                </>
+                <PrimaryButton
+                  label="Watch a video for one more picture"
+                  onPress={onWatchAd}
+                  loading={gate === 'ad'}
+                  disabled={gate !== null}
+                  testID="gate-ad"
+                />
               )}
               {gateMessage ? <Text style={styles.gateNote}>{gateMessage}</Text> : null}
             </Section>

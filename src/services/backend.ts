@@ -7,8 +7,8 @@
  *
  * The backend endpoint and its optional shared token are public values (they ship
  * inside the app bundle); neither is a secret. The shared token is a throttle,
- * not authentication — real authorization (checking that the caller is entitled
- * to a generation) is a server-side feature that lands before public release.
+ * not authentication. The backend's own limits (per minute, at once, and per
+ * month) are what bound the cost.
  *
  * NEVER put FAL_KEY (or any renamed variant such as `EXPO_PUBLIC_FAL_KEY`) in this
  * app: it is a server-side secret and only ever belongs on the backend.
@@ -39,6 +39,8 @@ export interface TryOnEndpointOptions {
   baseUrl: string;
   token?: string;
   development?: boolean;
+  /** The route on the backend. `/tryon` unless another is named. */
+  path?: string;
 }
 
 /**
@@ -87,14 +89,15 @@ export function buildTryOnEndpoint(
   // `ws`/`wss` are accepted in configuration for backward compatibility, but a
   // try-on is HTTP, so the transport scheme is http/https either way.
   const suffix = query.toString() === '' ? '' : `?${query.toString()}`;
-  return { url: `${secure ? 'https' : 'http'}://${authority}${basePath}/tryon${suffix}` };
+  return { url: `${secure ? 'https' : 'http'}://${authority}${basePath}${options.path ?? '/tryon'}${suffix}` };
 }
 
-/** Resolves the endpoint from the configured environment. */
-export function resolveTryOnEndpoint(): TryOnEndpointRequest | { error: string } {
+/** Resolves the try-on endpoint, or another route, from the configured environment. */
+export function resolveTryOnEndpoint(path?: string): TryOnEndpointRequest | { error: string } {
   return buildTryOnEndpoint({
     baseUrl: ONME_BACKEND_URL,
     token: ONME_BACKEND_TOKEN,
     development: isDevelopmentBuild(),
+    path,
   });
 }
